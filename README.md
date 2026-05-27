@@ -28,6 +28,50 @@ A production-ready Soroban smart contract on the Stellar blockchain that locks X
 
 ---
 
+## Architecture
+
+### Deposit / Withdraw Flow
+
+```
+Depositor
+   │
+   ├─► deposit(token, amount, unlock_time)
+   │       │
+   │       ├─ validate amount & unlock_time
+   │       ├─ token.transfer(depositor → contract)
+   │       ├─ storage::set_deposit(VaultKey::Deposit(depositor) → VaultEntry)
+   │       └─ emit "deposit" event
+   │
+   └─► withdraw(depositor)
+           │
+           ├─ load VaultEntry
+           ├─ assert now >= unlock_time
+           ├─ storage::remove_deposit(depositor)   ← state cleared first (CEI)
+           ├─ token.transfer(contract → depositor)
+           └─ emit "withdraw" event
+```
+
+### Storage Layout
+
+```
+Persistent Storage
+├── VaultKey::Admin                    → Address
+│       (set once on initialize; removed on renounce_admin)
+│
+├── VaultKey::PendingAdmin             → Address
+│       (set by transfer_admin; cleared by accept_admin / cancel_transfer_admin)
+│
+└── VaultKey::Deposit(depositor: Address) → VaultEntry
+        ├── token:       Address   (SEP-41 token contract)
+        ├── amount:      i128      (locked units)
+        ├── unlock_time: u64       (Unix seconds)
+        └── depositor:   Address   (owner; stored for event emission)
+```
+
+All entries use TTL bump threshold ≈ 30 days and target ≈ 5.2 years so a max-duration deposit cannot expire before its unlock time.
+
+---
+
 ## Project Structure
 
 ```
@@ -193,12 +237,44 @@ make check
 make optimize
 ```
 
+### Check WASM size
+
+```bash
+make check-wasm-size
+```
+
+Fails if the optimized WASM exceeds `MAX_WASM_BYTES` (default **65 536 bytes / 64 KB**).
+Override the threshold at the command line:
+
+```bash
+make check-wasm-size MAX_WASM_BYTES=81920   # 80 KB
+```
+
+The same threshold is enforced in CI via the `Check WASM size` step in `.github/workflows/ci.yml`.
+To update the limit, change `MAX_WASM_BYTES` in both places (or only in `ci.yml` if you don't use the Makefile target locally).
+
 ### Deploy to Testnet
 
 ```bash
 export SOROBAN_SECRET_KEY=S...
 make deploy-testnet
 ```
+
+### Smoke Test (local node)
+
+Runs a quick end-to-end test against a local Soroban standalone node — no funded account or testnet access required.
+
+```bash
+# Build the WASM first, then run the smoke test
+make smoke-test-local
+```
+
+The script (`scripts/smoke_test_local.sh`):
+1. Starts a local node via `stellar network start local`
+2. Generates a funded test identity
+3. Deploys the contract and calls `initialize`, `deposit`, `get_vault`, `time_remaining`, and `withdraw`
+4. Asserts expected outputs at each step
+5. Stops the local node on exit
 
 ---
 

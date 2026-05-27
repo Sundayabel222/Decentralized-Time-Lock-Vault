@@ -4,7 +4,7 @@ use crate::{
     errors::VaultError,
     events,
     storage,
-    types::{VaultEntry, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
+    types::{VaultEntry, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS},
 };
 
 // ============================================================
@@ -102,9 +102,14 @@ impl TimeLockVault {
         if lock_duration > max_lock {
             return Err(VaultError::LockDurationTooLong);
         }
+        // Enforce a minimum lock duration to avoid trivial deposits that
+        // immediately expire and waste persistent storage.
+        if lock_duration < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
 
         // --- Duplicate deposit guard ---
-        if storage::has_deposit(&env, &depositor) {
+        if storage::get_deposit_readonly(&env, &depositor).is_some() {
             return Err(VaultError::DepositAlreadyExists);
         }
 
@@ -143,8 +148,8 @@ impl TimeLockVault {
         // --- Auth ---
         depositor.require_auth();
 
-        // --- Load deposit (bumps TTL — this is a state-changing call) ---
-        let entry = storage::get_deposit(&env, &depositor)
+        // --- Load deposit without bumping TTL; the entry will be deleted ---
+        let entry = storage::get_deposit_readonly(&env, &depositor)
             .ok_or(VaultError::NoDepositFound)?;
 
         // --- Time check ---
@@ -198,8 +203,8 @@ impl TimeLockVault {
             return Err(VaultError::Unauthorized);
         }
 
-        // --- Load deposit ---
-        let entry = storage::get_deposit(&env, &depositor)
+        // --- Load deposit without bumping TTL; the entry will be deleted ---
+        let entry = storage::get_deposit_readonly(&env, &depositor)
             .ok_or(VaultError::NoDepositFound)?;
 
         // --- Checks-Effects-Interactions ---
@@ -243,6 +248,12 @@ impl TimeLockVault {
         let stored_admin = storage::get_admin(&env).ok_or(VaultError::Unauthorized)?;
         if admin != stored_admin {
             return Err(VaultError::Unauthorized);
+        }
+
+        // Prevent nominating the current admin as the pending admin — this
+        // would be a no-op that wastes storage and emits a misleading event.
+        if new_admin == stored_admin {
+            return Err(VaultError::InvalidAdmin);
         }
 
         storage::set_pending_admin(&env, &new_admin);
