@@ -510,7 +510,7 @@ fn test_redeposit_after_withdraw_succeeds() {
 fn test_get_vault_is_readonly() {
     // Calling get_vault on a non-existent entry should return None cleanly
     // without panicking or creating storage entries.
-    let (env, vault, _token, _admin, alice) = setup();
+    let (_env, vault, _token, _admin, alice) = setup();
     assert!(vault.get_vault(&alice).is_none());
     // Calling again should still return None (no side effects)
     assert!(vault.get_vault(&alice).is_none());
@@ -518,8 +518,194 @@ fn test_get_vault_is_readonly() {
 
 #[test]
 fn test_time_remaining_is_readonly() {
-    let (env, vault, _token, _admin, alice) = setup();
+    let (_env, vault, _token, _admin, alice) = setup();
     // Multiple calls should be idempotent
     assert_eq!(vault.time_remaining(&alice), 0);
     assert_eq!(vault.time_remaining(&alice), 0);
+}
+
+// ================================================================
+//  Depositor List / Pagination
+// ================================================================
+
+#[test]
+fn test_depositor_count_empty() {
+    let (_env, vault, _token, _admin, _alice) = setup();
+    assert_eq!(vault.get_depositor_count(), 0);
+}
+
+#[test]
+fn test_depositors_empty_returns_empty_vec() {
+    let (_env, vault, _token, _admin, _alice) = setup();
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_depositor_count_single_entry() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    assert_eq!(vault.get_depositor_count(), 1);
+}
+
+#[test]
+fn test_depositors_single_entry() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap(), alice);
+}
+
+#[test]
+fn test_depositor_count_multiple_entries() {
+    let (env, vault, token, _admin, alice) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+    asset_client.mint(&carol, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    vault.deposit(&bob, &token, &2_000, &unlock_time);
+    vault.deposit(&carol, &token, &3_000, &unlock_time);
+
+    assert_eq!(vault.get_depositor_count(), 3);
+}
+
+#[test]
+fn test_depositors_multiple_entries_full_page() {
+    let (env, vault, token, _admin, alice) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+    asset_client.mint(&carol, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    vault.deposit(&bob, &token, &2_000, &unlock_time);
+    vault.deposit(&carol, &token, &3_000, &unlock_time);
+
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 3);
+}
+
+#[test]
+fn test_depositor_removed_on_withdraw() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    advance_time(&env, 3601);
+    vault.withdraw(&alice);
+
+    assert_eq!(vault.get_depositor_count(), 0);
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_depositor_removed_on_emergency_withdraw() {
+    let (env, vault, token, admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 86400;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    vault.emergency_withdraw(&admin, &alice);
+
+    assert_eq!(vault.get_depositor_count(), 0);
+}
+
+#[test]
+fn test_depositor_list_consistent_after_partial_removal() {
+    let (env, vault, token, _admin, alice) = setup();
+    let bob: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    vault.deposit(&bob, &token, &2_000, &unlock_time);
+    assert_eq!(vault.get_depositor_count(), 2);
+
+    advance_time(&env, 3601);
+    vault.withdraw(&alice);
+
+    assert_eq!(vault.get_depositor_count(), 1);
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap(), bob);
+}
+
+#[test]
+fn test_pagination_offset_and_limit() {
+    let (env, vault, token, _admin, alice) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+    asset_client.mint(&carol, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    vault.deposit(&bob, &token, &2_000, &unlock_time);
+    vault.deposit(&carol, &token, &3_000, &unlock_time);
+
+    // First page: offset=0, limit=2
+    let page1 = vault.get_depositors(&0, &2);
+    assert_eq!(page1.len(), 2);
+
+    // Second page: offset=2, limit=2 → only 1 remaining
+    let page2 = vault.get_depositors(&2, &2);
+    assert_eq!(page2.len(), 1);
+}
+
+#[test]
+fn test_pagination_offset_beyond_end_returns_empty() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+
+    let page = vault.get_depositors(&10, &5);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_pagination_limit_zero_returns_empty() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+
+    let page = vault.get_depositors(&0, &0);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_redeposit_after_withdraw_adds_back_to_list() {
+    let (env, vault, token, _admin, alice) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    advance_time(&env, 3601);
+    vault.withdraw(&alice);
+    assert_eq!(vault.get_depositor_count(), 0);
+
+    let new_unlock = env.ledger().timestamp() + 7200;
+    vault.deposit(&alice, &token, &500, &new_unlock);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.get(0).unwrap(), alice);
 }

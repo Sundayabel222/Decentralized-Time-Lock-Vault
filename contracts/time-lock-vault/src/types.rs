@@ -29,6 +29,8 @@ pub enum VaultKey {
     Admin,
     /// Pending admin address during a two-step admin transfer
     PendingAdmin,
+    /// Global list of all active depositor addresses (Vec<Address>)
+    DepositorList,
 }
 
 // ----------------------------------------------------------------

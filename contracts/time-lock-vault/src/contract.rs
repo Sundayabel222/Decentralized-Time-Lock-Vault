@@ -1,4 +1,4 @@
-use soroban_sdk::{contract, contractimpl, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
 use crate::{
     errors::VaultError,
@@ -111,6 +111,9 @@ impl TimeLockVault {
         };
         storage::set_deposit(&env, &depositor, &entry);
 
+        // --- Maintain global depositor list ---
+        storage::add_depositor(&env, &depositor);
+
         // --- Emit event ---
         events::deposit(&env, &depositor, &token, amount, unlock_time);
 
@@ -145,6 +148,7 @@ impl TimeLockVault {
 
         // --- Checks-Effects-Interactions: clear storage BEFORE external call ---
         storage::remove_deposit(&env, &depositor);
+        storage::remove_depositor(&env, &depositor);
 
         // --- Transfer tokens from contract → depositor ---
         let token_client = token::Client::new(&env, &entry.token);
@@ -194,6 +198,7 @@ impl TimeLockVault {
 
         // --- Checks-Effects-Interactions ---
         storage::remove_deposit(&env, &depositor);
+        storage::remove_depositor(&env, &depositor);
 
         // --- Return funds to depositor (NOT to admin) ---
         let token_client = token::Client::new(&env, &entry.token);
@@ -352,5 +357,23 @@ impl TimeLockVault {
     /// Returns the protocol constants for client-side validation.
     pub fn get_constants(_env: Env) -> (i128, u64) {
         (MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS)
+    }
+
+    // ----------------------------------------------------------------
+    //  Admin Tooling: Depositor Enumeration
+    // ----------------------------------------------------------------
+
+    /// Returns the total number of active depositors.
+    pub fn get_depositor_count(env: Env) -> u32 {
+        storage::get_depositor_count(&env)
+    }
+
+    /// Returns a paginated slice of active depositor addresses.
+    ///
+    /// # Arguments
+    /// * `offset` — Zero-based start index.
+    /// * `limit`  — Maximum number of addresses to return.
+    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Vec<Address> {
+        storage::get_depositors_page(&env, offset, limit)
     }
 }
