@@ -37,8 +37,8 @@ impl TimeLockVault {
     ) -> Result<(), VaultError> {
         admin.require_auth();
 
-        if storage::get_admin(&env).is_some() {
-            return Err(VaultError::Unauthorized);
+        if storage::is_initialized(&env) {
+            return Err(VaultError::AlreadyInitialized);
         }
         storage::set_admin(&env, &admin);
         storage::set_initialized(&env);

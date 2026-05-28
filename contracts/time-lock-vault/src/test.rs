@@ -74,10 +74,8 @@ fn test_initialize_sets_fee_recipient() {
 #[test]
 fn test_double_initialize_fails() {
     let (_env, vault, _token, admin, _alice, fee) = setup();
-    let result = vault.try_initialize(&admin, &fee);
-    let (_env, vault, _token, admin, _alice) = setup();
-    let result = vault.try_initialize(&admin, &None, &None);
-    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+    let result = vault.try_initialize(&admin, &fee, &None, &None);
+    assert_eq!(result, Err(Ok(VaultError::AlreadyInitialized)));
 }
 
 #[test]
