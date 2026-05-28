@@ -488,6 +488,110 @@ fn test_cancel_deposit_penalty_stored_in_vault_entry() {
 }
 
 // ================================================================
+//  extend_lock
+// ================================================================
+
+#[test]
+fn test_extend_lock_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let original_unlock = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
+
+    let new_unlock = original_unlock + 7200;
+    vault.extend_lock(&alice, &id, &new_unlock);
+
+    let entry = vault.get_vault(&alice, &id).unwrap();
+    assert_eq!(entry.unlock_time, new_unlock);
+}
+
+#[test]
+fn test_extend_lock_shorten_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let original_unlock = env.ledger().timestamp() + 7200;
+    let id = vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
+
+    let shorter = original_unlock - 3600;
+    let result = vault.try_extend_lock(&alice, &id, &shorter);
+    assert_eq!(result, Err(Ok(VaultError::LockWouldNotIncrease)));
+}
+
+#[test]
+fn test_extend_lock_same_time_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+
+    let result = vault.try_extend_lock(&alice, &id, &unlock);
+    assert_eq!(result, Err(Ok(VaultError::LockWouldNotIncrease)));
+}
+
+#[test]
+fn test_extend_lock_exceeds_max_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let original_unlock = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
+
+    let too_far = env.ledger().timestamp() + MAX_LOCK_DURATION_SECS + 1;
+    let result = vault.try_extend_lock(&alice, &id, &too_far);
+    assert_eq!(result, Err(Ok(VaultError::LockDurationTooLong)));
+}
+
+#[test]
+fn test_extend_lock_no_deposit_fails() {
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
+    let result = vault.try_extend_lock(&alice, &0, &100_000);
+    assert_eq!(result, Err(Ok(VaultError::NoDepositFound)));
+}
+
+#[test]
+fn test_extend_lock_requires_depositor_auth() {
+    let env = Env::default();
+    let vault_id = env.register(TimeLockVault, ());
+    let vault = TimeLockVaultClient::new(&env, &vault_id);
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let bob: Address = Address::generate(&env);
+    let fee: Address = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token = token_id.address();
+    StellarAssetClient::new(&env, &token).mint(&alice, &10_000);
+    vault.initialize(&admin, &None, &None);
+
+    let unlock = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+
+    // Bob (not depositor) tries to extend — should fail auth
+    let result = vault.try_extend_lock(&bob, &id, &(unlock + 3600));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_extend_lock_bumps_ttl() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+
+    let key = VaultKey::Deposit(alice.clone(), id);
+    let live_before = env.storage().persistent().get_ttl(&key);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: env.ledger().timestamp() + 100,
+        protocol_version: env.ledger().protocol_version(),
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 33_000_000,
+    });
+
+    vault.extend_lock(&alice, &id, &(unlock + 7200));
+
+    let live_after = env.storage().persistent().get_ttl(&key);
+    assert!(live_after >= live_before);
+}
+
+// ================================================================
 //  Time helpers
 // ================================================================
 

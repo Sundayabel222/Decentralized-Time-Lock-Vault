@@ -39,4 +39,7 @@ pub enum VaultError {
 
     /// The nominated admin address is invalid (e.g., same as current admin).
     InvalidAdmin = 10,
+
+    /// Attempted to extend a lock to a time not strictly greater than the current unlock time.
+    LockWouldNotIncrease = 11,
 }

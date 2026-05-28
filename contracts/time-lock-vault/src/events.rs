@@ -50,6 +50,19 @@ pub fn admin_renounced(env: &Env, former_admin: &Address) {
     env.events().publish(topics, ());
 }
 
+/// Emitted when a depositor extends the unlock time of an active deposit.
+pub fn lock_extended(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    old_unlock_time: u64,
+    new_unlock_time: u64,
+) {
+    let topics = (symbol_short!("lock_ext"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, old_unlock_time, new_unlock_time));
+}
+
 /// Emitted when a depositor cancels early and pays a penalty.
 pub fn deposit_cancelled(
     env: &Env,

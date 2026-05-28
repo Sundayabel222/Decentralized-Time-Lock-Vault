@@ -229,6 +229,42 @@ impl TimeLockVault {
     }
 
     // ----------------------------------------------------------------
+    //  Core: Extend Lock
+    // ----------------------------------------------------------------
+
+    /// Extend the unlock time of an active deposit. Requires the depositor's auth.
+    /// `new_unlock_time` must be strictly greater than the current unlock time
+    /// and must not exceed `now + max_lock_secs`.
+    pub fn extend_lock(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        new_unlock_time: u64,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        let mut entry = storage::get_deposit(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+
+        if new_unlock_time <= entry.unlock_time {
+            return Err(VaultError::LockWouldNotIncrease);
+        }
+
+        let now = env.ledger().timestamp();
+        let max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+        if new_unlock_time.saturating_sub(now) > max_lock {
+            return Err(VaultError::LockDurationTooLong);
+        }
+
+        let old_unlock_time = entry.unlock_time;
+        entry.unlock_time = new_unlock_time;
+        storage::set_deposit(&env, &depositor, deposit_id, &entry);
+
+        events::lock_extended(&env, &depositor, deposit_id, old_unlock_time, new_unlock_time);
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------
     //  Core: Withdraw
     // ----------------------------------------------------------------
 

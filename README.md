@@ -220,6 +220,8 @@ Use `offset=0, limit=N` for the first page, then increment `offset` by `N` for s
 | 7 | `Unauthorized` | Caller is not the admin |
 | 8 | `AmountTooLarge` | Amount exceeds 10^15 |
 | 9 | `InvalidPenaltyBps` | `penalty_bps` > 10000 |
+| 10 | `InvalidAdmin` | Admin nomination is invalid (e.g. same as current admin)
+| 11 | `LockWouldNotIncrease` | `extend_lock` new time ≤ current unlock time |
 
 ---
 
