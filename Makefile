@@ -6,6 +6,8 @@ WASM_TARGET  := wasm32-unknown-unknown
 WASM_OUT     := target/wasm32-unknown-unknown/release/time_lock_vault.wasm
 OPTIMIZED    := target/time_lock_vault.optimized.wasm
 
+.PHONY: all build test fmt fmt-fix lint clean optimize deploy-testnet size check audit deny
+.PHONY: all build test fmt fmt-fix lint clean optimize deploy-testnet size check doc smoke-test-local
 .PHONY: all build test fmt lint clean optimize deploy-testnet size check audit deny
 .PHONY: all build test fmt lint clean optimize deploy-testnet size check doc smoke-test-local install-tools
 
@@ -21,8 +23,11 @@ test:
 	cargo test --features testutils
 
 ## Format all Rust source files
-fmt:
+fmt-fix:
 	cargo fmt --all
+
+## Backwards-compat alias for fmt-fix
+fmt: fmt-fix
 
 ## Check formatting without modifying files (used in CI)
 fmt-check:
