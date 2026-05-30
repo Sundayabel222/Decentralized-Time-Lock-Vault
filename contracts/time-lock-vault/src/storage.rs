@@ -19,58 +19,18 @@ pub const BUMP_TARGET: u32 = 33_000_000;
 //  Deposit helpers
 // ----------------------------------------------------------------
 
+/// Persists `entry` under `VaultKey::Deposit(depositor)` and bumps its TTL.
 pub fn set_deposit(env: &Env, depositor: &Address, entry: &VaultEntry) {
     let key = VaultKey::Deposit(depositor.clone());
-//  Deposit counter helpers
-// ----------------------------------------------------------------
-
-/// Returns the next sequential deposit ID for `depositor` and increments the persistent counter.
-/// The counter itself is TTL-bumped on every call.
-pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
-    let key = VaultKey::DepositCounter(depositor.clone());
-    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-    env.storage().persistent().set(&key, &(id + 1));
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    id
-}
-
-/// Returns all active deposit IDs for `depositor` by scanning the counter range.
-/// IDs whose storage entries have been removed (withdrawn) are excluded.
-pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
-    let counter_key = VaultKey::DepositCounter(depositor.clone());
-    let count: u32 = env.storage().persistent().get(&counter_key).unwrap_or(0);
-
-    let mut ids = Vec::new(env);
-    for id in 0..count {
-        let key = VaultKey::Deposit(depositor.clone(), id);
-        if env.storage().persistent().has(&key) {
-            ids.push_back(id);
-        }
-    }
-    ids
-}
-
-// ----------------------------------------------------------------
-//  Deposit helpers
-// ----------------------------------------------------------------
-
-/// Persists `entry` under `VaultKey::Deposit(depositor, deposit_id)` and bumps its TTL.
-pub fn set_deposit(env: &Env, depositor: &Address, deposit_id: u32, entry: &VaultEntry) {
-    let key = VaultKey::Deposit(depositor.clone(), deposit_id);
     env.storage().persistent().set(&key, entry);
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
-/// Load deposit and bump TTL (use for mutating paths that keep the entry).
+/// Loads a deposit entry and bumps its TTL if found. Use for mutating call paths.
 pub fn get_deposit(env: &Env, depositor: &Address) -> Option<VaultEntry> {
     let key = VaultKey::Deposit(depositor.clone());
-/// Loads a deposit entry and bumps its TTL if found. Use for mutating call paths.
-pub fn get_deposit(env: &Env, depositor: &Address, deposit_id: u32) -> Option<VaultEntry> {
-    let key = VaultKey::Deposit(depositor.clone(), deposit_id);
     let entry: Option<VaultEntry> = env.storage().persistent().get(&key);
     if entry.is_some() {
         env.storage()
@@ -80,26 +40,17 @@ pub fn get_deposit(env: &Env, depositor: &Address, deposit_id: u32) -> Option<Va
     entry
 }
 
-/// Load deposit without bumping TTL (use when the entry will be deleted or for reads).
+/// Loads a deposit entry without bumping TTL. Use for read-only queries to avoid extra fees.
 pub fn get_deposit_readonly(env: &Env, depositor: &Address) -> Option<VaultEntry> {
     let key = VaultKey::Deposit(depositor.clone());
     env.storage().persistent().get(&key)
 }
 
+/// Removes the deposit entry from persistent storage (called after a successful withdrawal).
 pub fn remove_deposit(env: &Env, depositor: &Address) {
     env.storage()
         .persistent()
         .remove(&VaultKey::Deposit(depositor.clone()));
-/// Loads a deposit entry without bumping TTL. Use for read-only queries to avoid extra fees.
-pub fn get_deposit_readonly(env: &Env, depositor: &Address, deposit_id: u32) -> Option<VaultEntry> {
-    let key = VaultKey::Deposit(depositor.clone(), deposit_id);
-    env.storage().persistent().get(&key)
-}
-
-/// Removes the deposit entry from persistent storage (called after a successful withdrawal).
-pub fn remove_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
-    let key = VaultKey::Deposit(depositor.clone(), deposit_id);
-    env.storage().persistent().remove(&key);
 }
 
 // ----------------------------------------------------------------
@@ -181,7 +132,9 @@ pub fn get_max_deposit(env: &Env) -> Option<i128> {
 /// Persists a runtime override for the maximum lock duration (seconds) and bumps TTL.
 pub fn set_max_lock_secs(env: &Env, v: u64) {
     env.storage().persistent().set(&VaultKey::MaxLockSecs, &v);
-    env.storage().persistent().extend_ttl(&VaultKey::MaxLockSecs, BUMP_THRESHOLD, BUMP_TARGET);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::MaxLockSecs, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
 /// Returns the runtime-configured max lock duration, or `None` to use the compile-time default.
@@ -194,23 +147,6 @@ pub fn get_max_lock_secs(env: &Env) -> Option<u64> {
 // ----------------------------------------------------------------
 
 /// Persists the `fee_recipient` address and bumps TTL. Called once during `initialize`.
-pub fn set_fee_recipient(env: &Env, recipient: &Address) {
-    env.storage()
-        .persistent()
-        .set(&VaultKey::FeeRecipient, recipient);
-    env.storage()
-        .persistent()
-        .extend_ttl(&VaultKey::MaxLockSecs, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-pub fn get_max_lock_secs(env: &Env) -> Option<u64> {
-    env.storage().persistent().get(&VaultKey::MaxLockSecs)
-}
-
-// ----------------------------------------------------------------
-//  Fee recipient helpers
-// ----------------------------------------------------------------
-
 pub fn set_fee_recipient(env: &Env, recipient: &Address) {
     env.storage()
         .persistent()

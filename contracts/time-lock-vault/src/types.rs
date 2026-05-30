@@ -7,7 +7,7 @@ use soroban_sdk::{contracttype, Address};
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaultKey {
-    /// Maps depositor → VaultEntry
+    /// Maps depositor → VaultEntry (one active deposit per address)
     Deposit(Address),
     /// Contract-level admin address
     Admin,
