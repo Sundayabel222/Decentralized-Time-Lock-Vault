@@ -1,12 +1,12 @@
-use soroban_sdk::{symbol_short, Address, Env, Symbol};
+use soroban_sdk::{Address, Env, Symbol};
 
 pub fn deposit(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_time: u64) {
-    let topics = (symbol_short!("deposit"), depositor.clone(), token.clone());
+    let topics = (Symbol::new(env, "deposit"), depositor.clone(), token.clone());
     env.events().publish(topics, (amount, unlock_time));
 }
 
 pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128) {
-    let topics = (symbol_short!("withdraw"), depositor.clone(), token.clone());
+    let topics = (Symbol::new(env, "withdraw"), depositor.clone(), token.clone());
     env.events().publish(topics, amount);
 }
 
@@ -16,13 +16,14 @@ pub fn emergency_withdraw(
     depositor: &Address,
     token: &Address,
     amount: i128,
+    unlock_time: u64,
 ) {
     let topics = (
         Symbol::new(env, "emrg_wdraw"),
         admin.clone(),
         depositor.clone(),
     );
-    env.events().publish(topics, (token.clone(), amount));
+    env.events().publish(topics, (token.clone(), amount, unlock_time));
 }
 
 /// Emitted once per successfully processed depositor inside `batch_emergency_withdraw`.
@@ -33,8 +34,9 @@ pub fn batch_emergency_withdraw_item(
     depositor: &Address,
     token: &Address,
     amount: i128,
+    unlock_time: u64,
 ) {
-    emergency_withdraw(env, admin, depositor, token, amount);
+    emergency_withdraw(env, admin, depositor, token, amount, unlock_time);
 }
 
 pub fn admin_transfer_initiated(env: &Env, current_admin: &Address, pending_admin: &Address) {

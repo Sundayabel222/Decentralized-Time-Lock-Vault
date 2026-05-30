@@ -289,6 +289,7 @@ TTL is bumped on every **write**. Read-only query functions (`get_vault`, `time_
 | Safe admin transfer | Two-step transfer prevents accidental key loss |
 | TTL management | Persistent entries bumped to ~1 year on every write; view functions skip TTL bump |
 | No testutils in production | `features = ["testutils"]` only in `[dev-dependencies]` |
+| Initialize front-running | `initialize()` has no on-chain guard against a race: an attacker who observes the deploy transaction in the mempool can call `initialize` first with their own address. **Mitigation:** always call `initialize` in the same transaction as `deploy` (atomic deploy+init) so no intermediate state is visible. The deploy script does this by default. |
 
 ---
 
@@ -304,6 +305,16 @@ Soroban contracts are **immutable by default** — once deployed, the contract c
 | Trustless trade-off | If `renounce_admin()` has been called, no migration is possible — the contract is fully trustless but also fully immutable with no escape hatch |
 
 Plan deployments carefully. Audit the contract before going to mainnet, because there is no way to patch a live deployment.
+
+---
+
+## Known Limitations
+
+- **One active deposit per address in the documented flow.** The README and error model describe deposits as address-keyed entries, so a depositor should withdraw or cancel the current vault entry before opening another one.
+- **No partial withdrawals.** A withdrawal or emergency withdrawal returns the full stored amount for the vault entry; the contract does not expose an amount parameter for withdrawing only part of a deposit.
+- **No early user withdrawal.** Standard `withdraw` only succeeds once `unlock_time` has passed. Early exits must use the explicit cancellation flow where configured, or the admin emergency path.
+- **Single-admin control.** Admin functions are controlled by one admin address at a time. The contract supports two-step admin transfer and renouncing admin rights, but it does not implement native multisig approval.
+- **Storage TTL requires operational monitoring for long locks.** Persistent entries are bumped during writes, but long-lived deployments should monitor TTL assumptions so maximum-duration locks remain recoverable.
 
 ---
 
@@ -389,6 +400,17 @@ To update the limit, change `MAX_WASM_BYTES` in both places (or only in `ci.yml`
 export SOROBAN_SECRET_KEY=S...
 make deploy-testnet
 ```
+
+### Release Deployment (CI)
+
+Pushing a version tag triggers the `deploy-testnet` CI job automatically:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The job requires the `SOROBAN_SECRET_KEY` secret to be set in the repository's **testnet** environment (`Settings → Environments → testnet → Secrets`). After the run, the deployed contract ID appears in the job's summary tab.
 
 ### Smoke Test (local node)
 

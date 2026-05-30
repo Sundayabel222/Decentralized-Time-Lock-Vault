@@ -9,17 +9,18 @@ use soroban_sdk::{
 };
 
 use crate::{
+    constants::{MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
     contract::{TimeLockVault, TimeLockVaultClient},
     errors::VaultError,
-    types::{WithdrawResult, MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
+    types::WithdrawResult,
 };
 
 // ================================================================
 //  Test helpers
 // ================================================================
 
-/// Returns (env, vault_client, token_address, admin, alice).
-fn setup() -> (Env, TimeLockVaultClient<'static>, Address, Address, Address) {
+/// Returns (env, vault_client, token_address, admin, alice, fee_recipient).
+fn setup() -> (Env, TimeLockVaultClient<'static>, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -28,6 +29,7 @@ fn setup() -> (Env, TimeLockVaultClient<'static>, Address, Address, Address) {
 
     let admin: Address = Address::generate(&env);
     let alice: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
 
     let token_id = env.register_stellar_asset_contract_v2(admin.clone());
     let token_address = token_id.address();
@@ -36,7 +38,7 @@ fn setup() -> (Env, TimeLockVaultClient<'static>, Address, Address, Address) {
 
     vault.initialize(&admin, &None, &None);
 
-    (env, vault, token_address, admin, alice)
+    (env, vault, token_address, admin, alice, fee_recipient)
 }
 
 fn setup_with_limits(
@@ -80,13 +82,13 @@ fn advance_time(env: &Env, seconds: u64) {
 
 #[test]
 fn test_initialize_sets_admin() {
-    let (_env, vault, _token, admin, _alice) = setup();
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
     assert_eq!(vault.get_admin(), Some(admin));
 }
 
 #[test]
 fn test_double_initialize_fails() {
-    let (_env, vault, _token, admin, _alice) = setup();
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
     assert_eq!(vault.try_initialize(&admin, &None, &None), Err(Ok(VaultError::Unauthorized)));
 }
 
@@ -104,13 +106,59 @@ fn test_is_initialized() {
     assert!(vault.is_initialized());
 }
 
-// ================================================================
-//  Deposit — happy path
-// ================================================================
+use arbitrary::{Arbitrary, Unstructured};
+use rand::RngCore;
+
+#[derive(Arbitrary, Debug)]
+struct DepositParams {
+    amount: i128,
+    unlock_time: u64,
+}
+
+#[test]
+fn test_deposit_property_validation() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let mut rng = rand::thread_rng();
+
+    for _ in 0..100 {
+        let mut bytes = [0u8; 64];
+        rng.fill_bytes(&mut bytes);
+        let mut unstructured = Unstructured::new(&bytes);
+        let params: DepositParams = match Arbitrary::arbitrary(&mut unstructured) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        let now = env.ledger().timestamp();
+        let max_deposit = MAX_DEPOSIT_AMOUNT;
+        let max_lock = MAX_LOCK_DURATION_SECS;
+        let min_lock = crate::constants::MIN_LOCK_DURATION_SECS;
+
+        let result = vault.try_deposit(&alice, &token, &params.amount, &params.unlock_time, &0);
+
+        if params.amount <= 0 {
+            assert_eq!(result, Err(Ok(VaultError::InvalidAmount)));
+        } else if params.amount > max_deposit {
+            assert_eq!(result, Err(Ok(VaultError::AmountTooLarge)));
+        } else if params.unlock_time <= now {
+            assert_eq!(result, Err(Ok(VaultError::UnlockTimeNotInFuture)));
+        } else if params.unlock_time.saturating_sub(now) > max_lock {
+            assert_eq!(result, Err(Ok(VaultError::LockDurationTooLong)));
+        } else if params.unlock_time.saturating_sub(now) < min_lock {
+            assert_eq!(result, Err(Ok(VaultError::LockDurationTooShort)));
+        } else {
+            // Should succeed
+            assert!(result.is_ok());
+            // Need to cleanup
+            vault.withdraw(&alice);
+        }
+    }
+}
+
 
 #[test]
 fn test_deposit_success() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
 
@@ -118,7 +166,6 @@ fn test_deposit_success() {
     assert_eq!(entry.amount, 1_000);
     assert_eq!(entry.unlock_time, unlock_time);
     assert_eq!(entry.token, token);
-    assert_eq!(entry.depositor, alice);
     assert_eq!(entry.penalty_bps, 0);
 
     let events = env.events().all();
@@ -135,7 +182,7 @@ fn test_deposit_success() {
 
 #[test]
 fn test_deposit_transfers_tokens_to_contract() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
@@ -148,21 +195,21 @@ fn test_deposit_transfers_tokens_to_contract() {
 
 #[test]
 fn test_deposit_zero_amount_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     assert_eq!(vault.try_deposit(&alice, &token, &0, &unlock_time, &0), Err(Ok(VaultError::InvalidAmount)));
 }
 
 #[test]
 fn test_deposit_negative_amount_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     assert_eq!(vault.try_deposit(&alice, &token, &-1, &unlock_time, &0), Err(Ok(VaultError::InvalidAmount)));
 }
 
 #[test]
 fn test_deposit_amount_exceeds_max_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     StellarAssetClient::new(&env, &token).mint(&alice, &MAX_DEPOSIT_AMOUNT);
     let unlock_time = env.ledger().timestamp() + 3600;
     assert_eq!(vault.try_deposit(&alice, &token, &(MAX_DEPOSIT_AMOUNT + 1), &unlock_time, &0), Err(Ok(VaultError::AmountTooLarge)));
@@ -170,7 +217,7 @@ fn test_deposit_amount_exceeds_max_fails() {
 
 #[test]
 fn test_deposit_at_max_amount_succeeds() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     StellarAssetClient::new(&env, &token).mint(&alice, &MAX_DEPOSIT_AMOUNT);
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &MAX_DEPOSIT_AMOUNT, &unlock_time, &0);
@@ -185,11 +232,10 @@ fn test_deposit_minimum_amount_succeeds() {
 
     vault.deposit(&alice, &token, &1, &unlock_time, &0);
 
-    let entry = vault.get_vault(&alice, &0).expect("entry should exist");
+    let entry = vault.get_vault(&alice).expect("entry should exist");
     assert_eq!(entry.amount, 1);
     assert_eq!(entry.unlock_time, unlock_time);
     assert_eq!(entry.token, token);
-    assert_eq!(entry.depositor, alice);
 
     // Alice started with 10_000; 1 unit transferred to contract
     assert_eq!(token_client.balance(&alice), 9_999);
@@ -198,21 +244,21 @@ fn test_deposit_minimum_amount_succeeds() {
 
 #[test]
 fn test_deposit_past_unlock_time_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp();
     assert_eq!(vault.try_deposit(&alice, &token, &1_000, &unlock_time, &0), Err(Ok(VaultError::UnlockTimeNotInFuture)));
 }
 
 #[test]
 fn test_deposit_lock_duration_too_long_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + MAX_LOCK_DURATION_SECS + 1;
     assert_eq!(vault.try_deposit(&alice, &token, &1_000, &unlock_time, &0), Err(Ok(VaultError::LockDurationTooLong)));
 }
 
 #[test]
 fn test_deposit_at_max_duration_succeeds() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + MAX_LOCK_DURATION_SECS;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     assert!(vault.get_vault(&alice).is_some());
@@ -220,7 +266,7 @@ fn test_deposit_at_max_duration_succeeds() {
 
 #[test]
 fn test_deposit_duplicate_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &500, &unlock_time, &0);
     assert_eq!(vault.try_deposit(&alice, &token, &500, &unlock_time, &0), Err(Ok(VaultError::DepositAlreadyExists)));
@@ -228,7 +274,7 @@ fn test_deposit_duplicate_fails() {
 
 #[test]
 fn test_deposit_invalid_penalty_bps_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     assert_eq!(vault.try_deposit(&alice, &token, &1_000, &unlock_time, &10_001), Err(Ok(VaultError::InvalidPenaltyBps)));
 }
@@ -239,7 +285,7 @@ fn test_deposit_invalid_penalty_bps_fails() {
 
 #[test]
 fn test_withdraw_after_unlock_succeeds() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
@@ -263,7 +309,7 @@ fn test_withdraw_after_unlock_succeeds() {
 
 #[test]
 fn test_withdraw_exactly_at_unlock_time_succeeds() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     advance_time(&env, 3600);
@@ -277,7 +323,7 @@ fn test_withdraw_exactly_at_unlock_time_succeeds() {
 
 #[test]
 fn test_withdraw_before_unlock_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     advance_time(&env, 1800);
@@ -286,7 +332,7 @@ fn test_withdraw_before_unlock_fails() {
 
 #[test]
 fn test_withdraw_no_deposit_fails() {
-    let (_env, vault, _token, _admin, alice) = setup();
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
     assert_eq!(vault.try_withdraw(&alice), Err(Ok(VaultError::NoDepositFound)));
 }
 
@@ -308,7 +354,7 @@ fn test_redeposit_after_withdraw_succeeds() {
 
 #[test]
 fn test_cancel_deposit_zero_penalty_returns_full_amount() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
@@ -319,13 +365,13 @@ fn test_cancel_deposit_zero_penalty_returns_full_amount() {
 
 #[test]
 fn test_cancel_deposit_no_deposit_fails() {
-    let (_env, vault, _token, _admin, alice) = setup();
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
     assert_eq!(vault.try_cancel_deposit(&alice), Err(Ok(VaultError::NoDepositFound)));
 }
 
 #[test]
 fn test_cancel_deposit_after_unlock_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &500);
     advance_time(&env, 3601);
@@ -334,7 +380,7 @@ fn test_cancel_deposit_after_unlock_fails() {
 
 #[test]
 fn test_cancel_deposit_penalty_stored_in_vault_entry() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &500);
     assert_eq!(vault.get_vault(&alice).unwrap().penalty_bps, 500);
@@ -348,12 +394,12 @@ fn test_cancel_deposit_penalty_stored_in_vault_entry() {
 fn test_extend_lock_success() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let original_unlock = env.ledger().timestamp() + 3600;
-    let id = vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
 
     let new_unlock = original_unlock + 7200;
-    vault.extend_lock(&alice, &id, &new_unlock);
+    vault.extend_lock(&alice, &new_unlock);
 
-    let entry = vault.get_vault(&alice, &id).unwrap();
+    let entry = vault.get_vault(&alice).unwrap();
     assert_eq!(entry.unlock_time, new_unlock);
 }
 
@@ -361,10 +407,10 @@ fn test_extend_lock_success() {
 fn test_extend_lock_shorten_fails() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let original_unlock = env.ledger().timestamp() + 7200;
-    let id = vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
 
     let shorter = original_unlock - 3600;
-    let result = vault.try_extend_lock(&alice, &id, &shorter);
+    let result = vault.try_extend_lock(&alice, &shorter);
     assert_eq!(result, Err(Ok(VaultError::LockWouldNotIncrease)));
 }
 
@@ -372,9 +418,9 @@ fn test_extend_lock_shorten_fails() {
 fn test_extend_lock_same_time_fails() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock = env.ledger().timestamp() + 3600;
-    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
 
-    let result = vault.try_extend_lock(&alice, &id, &unlock);
+    let result = vault.try_extend_lock(&alice, &unlock);
     assert_eq!(result, Err(Ok(VaultError::LockWouldNotIncrease)));
 }
 
@@ -382,17 +428,17 @@ fn test_extend_lock_same_time_fails() {
 fn test_extend_lock_exceeds_max_fails() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let original_unlock = env.ledger().timestamp() + 3600;
-    let id = vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &original_unlock, &0);
 
     let too_far = env.ledger().timestamp() + MAX_LOCK_DURATION_SECS + 1;
-    let result = vault.try_extend_lock(&alice, &id, &too_far);
+    let result = vault.try_extend_lock(&alice, &too_far);
     assert_eq!(result, Err(Ok(VaultError::LockDurationTooLong)));
 }
 
 #[test]
 fn test_extend_lock_no_deposit_fails() {
     let (_env, vault, _token, _admin, alice, _fee) = setup();
-    let result = vault.try_extend_lock(&alice, &0, &100_000);
+    let result = vault.try_extend_lock(&alice, &100_000);
     assert_eq!(result, Err(Ok(VaultError::NoDepositFound)));
 }
 
@@ -404,17 +450,17 @@ fn test_extend_lock_requires_depositor_auth() {
     let admin: Address = Address::generate(&env);
     let alice: Address = Address::generate(&env);
     let bob: Address = Address::generate(&env);
-    let fee: Address = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract_v2(admin.clone());
     let token = token_id.address();
     StellarAssetClient::new(&env, &token).mint(&alice, &10_000);
     vault.initialize(&admin, &None, &None);
 
     let unlock = env.ledger().timestamp() + 3600;
-    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
 
     // Bob (not depositor) tries to extend — should fail auth
-    let result = vault.try_extend_lock(&bob, &id, &(unlock + 3600));
+    env.mock_all_auths_allowing_non_root_auth();
+    let result = vault.try_extend_lock(&bob, &(unlock + 3600));
     assert!(result.is_err());
 }
 
@@ -422,9 +468,9 @@ fn test_extend_lock_requires_depositor_auth() {
 fn test_extend_lock_bumps_ttl() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock = env.ledger().timestamp() + 3600;
-    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
 
-    let key = VaultKey::Deposit(alice.clone(), id);
+    let key = VaultKey::Deposit(alice.clone());
     let live_before = env.storage().persistent().get_ttl(&key);
 
     env.ledger().set(LedgerInfo {
@@ -438,7 +484,7 @@ fn test_extend_lock_bumps_ttl() {
         max_entry_ttl: 33_000_000,
     });
 
-    vault.extend_lock(&alice, &id, &(unlock + 7200));
+    vault.extend_lock(&alice, &(unlock + 7200));
 
     let live_after = env.storage().persistent().get_ttl(&key);
     assert!(live_after >= live_before);
@@ -450,7 +496,7 @@ fn test_extend_lock_bumps_ttl() {
 
 #[test]
 fn test_time_remaining_before_unlock() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     advance_time(&env, 1800);
@@ -459,7 +505,7 @@ fn test_time_remaining_before_unlock() {
 
 #[test]
 fn test_time_remaining_after_unlock_is_zero() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     advance_time(&env, 7200);
@@ -495,19 +541,19 @@ fn test_time_remaining_one_second_past_unlock_no_underflow() {
 
 #[test]
 fn test_time_remaining_no_deposit_is_zero() {
-    let (_env, vault, _token, _admin, alice) = setup();
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
     assert_eq!(vault.time_remaining(&alice), 0);
 }
 
 #[test]
 fn test_get_time_returns_ledger_timestamp() {
-    let (env, vault, _token, _admin, _alice) = setup();
+    let (env, vault, _token, _admin, _alice, _fee) = setup();
     assert_eq!(vault.get_time(), env.ledger().timestamp());
 }
 
 #[test]
 fn test_get_constants_returns_correct_values() {
-    let (_env, vault, _token, _admin, _alice) = setup();
+    let (_env, vault, _token, _admin, _alice, _fee) = setup();
     let (max_amount, max_duration) = vault.get_constants();
     assert_eq!(max_amount, MAX_DEPOSIT_AMOUNT);
     assert_eq!(max_duration, MAX_LOCK_DURATION_SECS);
@@ -519,7 +565,7 @@ fn test_get_constants_returns_correct_values() {
 
 #[test]
 fn test_emergency_withdraw_by_admin_before_unlock_succeeds() {
-    let (env, vault, token, admin, alice) = setup();
+    let (env, vault, token, admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
     let unlock_time = env.ledger().timestamp() + 86400;
     vault.deposit(&alice, &token, &2_000, &unlock_time, &0);
@@ -535,14 +581,14 @@ fn test_emergency_withdraw_by_admin_before_unlock_succeeds() {
         (
             vault.address.clone(),
             (Symbol::new(&env, "emrg_wdraw"), admin.clone(), alice.clone()).into_val(&env),
-            (token.clone(), 2_000_i128).into_val(&env),
+            (token.clone(), 2_000_i128, unlock_time).into_val(&env),
         )
     );
 }
 
 #[test]
 fn test_emergency_withdraw_by_non_admin_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let bob: Address = Address::generate(&env);
     let unlock_time = env.ledger().timestamp() + 86400;
     vault.deposit(&alice, &token, &2_000, &unlock_time, &0);
@@ -551,7 +597,7 @@ fn test_emergency_withdraw_by_non_admin_fails() {
 
 #[test]
 fn test_emergency_withdraw_no_deposit_fails() {
-    let (_env, vault, _token, admin, alice) = setup();
+    let (_env, vault, _token, admin, alice, _fee) = setup();
     assert_eq!(vault.try_emergency_withdraw(&admin, &alice), Err(Ok(VaultError::NoDepositFound)));
 }
 
@@ -561,7 +607,7 @@ fn test_emergency_withdraw_no_deposit_fails() {
 
 #[test]
 fn test_batch_emergency_withdraw_all_valid() {
-    let (env, vault, token, admin, alice) = setup();
+    let (env, vault, token, admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
 
     let bob: Address = Address::generate(&env);
@@ -606,20 +652,27 @@ fn test_batch_emergency_withdraw_all_valid() {
     assert!(n >= 3);
     for i in (n - 3)..n {
         let e = all_events.get(i).unwrap();
+        let depositor = [alice.clone(), bob.clone(), carol.clone()][(i - (n - 3)) as usize].clone();
+        let amount = [1_000_i128, 2_000, 3_000][(i - (n - 3)) as usize];
         // topics tuple: (Symbol("emrg_wdraw"), admin, depositor)
         assert_eq!(
             e.1,
             (Symbol::new(&env, "emrg_wdraw"),
              admin.clone(),
-             [alice.clone(), bob.clone(), carol.clone()][(i - (n - 3)) as usize].clone())
+             depositor.clone())
                 .into_val(&env),
+        );
+        // data tuple: (token, amount, unlock_time)
+        assert_eq!(
+            e.2,
+            (token.clone(), amount, unlock_time).into_val(&env),
         );
     }
 }
 
 #[test]
 fn test_batch_emergency_withdraw_mixed_valid_invalid() {
-    let (env, vault, token, admin, alice) = setup();
+    let (env, vault, token, admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
 
     let bob: Address = Address::generate(&env);   // no deposit
@@ -657,7 +710,7 @@ fn test_batch_emergency_withdraw_mixed_valid_invalid() {
 
 #[test]
 fn test_batch_emergency_withdraw_non_admin_fails() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let bob: Address = Address::generate(&env);
     let unlock_time = env.ledger().timestamp() + 86400;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
@@ -676,7 +729,7 @@ fn test_batch_emergency_withdraw_non_admin_fails() {
 
 #[test]
 fn test_batch_emergency_withdraw_empty_list() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let depositors: Vec<Address> = Vec::new(&env);
     let results = vault.batch_emergency_withdraw(&admin, &depositors);
     assert_eq!(results.len(), 0);
@@ -684,7 +737,7 @@ fn test_batch_emergency_withdraw_empty_list() {
 
 #[test]
 fn test_batch_emergency_withdraw_exceeds_max_batch_size_fails() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let mut depositors: Vec<Address> = Vec::new(&env);
     for _ in 0..=(MAX_BATCH_SIZE) {
         depositors.push_back(Address::generate(&env));
@@ -699,7 +752,7 @@ fn test_batch_emergency_withdraw_exceeds_max_batch_size_fails() {
 fn test_batch_emergency_withdraw_single_auth_covers_batch() {
     // env.auths() should show exactly one auth entry for the admin,
     // not one per depositor.
-    let (env, vault, token, admin, alice) = setup();
+    let (env, vault, token, admin, alice, _fee) = setup();
     let bob: Address = Address::generate(&env);
     StellarAssetClient::new(&env, &token).mint(&bob, &5_000);
 
@@ -724,7 +777,7 @@ fn test_batch_emergency_withdraw_single_auth_covers_batch() {
 
 #[test]
 fn test_transfer_admin_two_step_succeeds() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let new_admin: Address = Address::generate(&env);
 
     vault.transfer_admin(&admin, &new_admin);
@@ -738,7 +791,7 @@ fn test_transfer_admin_two_step_succeeds() {
 
 #[test]
 fn test_transfer_admin_non_admin_cannot_initiate() {
-    let (env, vault, _token, _admin, _alice) = setup();
+    let (env, vault, _token, _admin, _alice, _fee) = setup();
     let bob: Address = Address::generate(&env);
     let carol: Address = Address::generate(&env);
     assert_eq!(vault.try_transfer_admin(&bob, &carol), Err(Ok(VaultError::Unauthorized)));
@@ -746,7 +799,7 @@ fn test_transfer_admin_non_admin_cannot_initiate() {
 
 #[test]
 fn test_accept_admin_wrong_address_fails() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let new_admin: Address = Address::generate(&env);
     let impostor: Address = Address::generate(&env);
     vault.transfer_admin(&admin, &new_admin);
@@ -756,14 +809,14 @@ fn test_accept_admin_wrong_address_fails() {
 
 #[test]
 fn test_accept_admin_with_no_pending_fails() {
-    let (env, vault, _token, _admin, _alice) = setup();
+    let (env, vault, _token, _admin, _alice, _fee) = setup();
     let bob: Address = Address::generate(&env);
     assert_eq!(vault.try_accept_admin(&bob), Err(Ok(VaultError::Unauthorized)));
 }
 
 #[test]
 fn test_cancel_transfer_admin_clears_pending() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let new_admin: Address = Address::generate(&env);
     vault.transfer_admin(&admin, &new_admin);
     vault.cancel_transfer_admin(&admin);
@@ -773,7 +826,7 @@ fn test_cancel_transfer_admin_clears_pending() {
 
 #[test]
 fn test_cancel_transfer_admin_emits_event() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let new_admin: Address = Address::generate(&env);
     vault.transfer_admin(&admin, &new_admin);
     vault.cancel_transfer_admin(&admin);
@@ -791,7 +844,7 @@ fn test_cancel_transfer_admin_emits_event() {
 
 #[test]
 fn test_cancel_transfer_admin_by_non_admin_fails() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let new_admin: Address = Address::generate(&env);
     let bob: Address = Address::generate(&env);
     vault.transfer_admin(&admin, &new_admin);
@@ -800,7 +853,7 @@ fn test_cancel_transfer_admin_by_non_admin_fails() {
 
 #[test]
 fn test_new_admin_can_emergency_withdraw_after_transfer() {
-    let (env, vault, token, admin, alice) = setup();
+    let (env, vault, token, admin, alice, _fee) = setup();
     let new_admin: Address = Address::generate(&env);
     let token_client = TokenClient::new(&env, &token);
     let unlock_time = env.ledger().timestamp() + 86400;
@@ -820,7 +873,7 @@ fn test_new_admin_can_emergency_withdraw_after_transfer() {
 
 #[test]
 fn test_renounce_admin_removes_admin() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     vault.renounce_admin(&admin);
     assert_eq!(vault.get_admin(), None);
 
@@ -838,7 +891,7 @@ fn test_renounce_admin_removes_admin() {
 
 #[test]
 fn test_renounce_admin_disables_emergency_withdraw() {
-    let (env, vault, token, admin, alice) = setup();
+    let (env, vault, token, admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 86400;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     vault.renounce_admin(&admin);
@@ -847,14 +900,14 @@ fn test_renounce_admin_disables_emergency_withdraw() {
 
 #[test]
 fn test_renounce_admin_by_non_admin_fails() {
-    let (env, vault, _token, _admin, _alice) = setup();
+    let (env, vault, _token, _admin, _alice, _fee) = setup();
     let bob: Address = Address::generate(&env);
     assert_eq!(vault.try_renounce_admin(&bob), Err(Ok(VaultError::Unauthorized)));
 }
 
 #[test]
 fn test_renounce_admin_clears_pending_transfer() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     let new_admin: Address = Address::generate(&env);
     vault.transfer_admin(&admin, &new_admin);
     vault.renounce_admin(&admin);
@@ -868,7 +921,7 @@ fn test_renounce_admin_clears_pending_transfer() {
 
 #[test]
 fn test_redeposit_after_withdraw_succeeds() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     advance_time(&env, 3601);
@@ -953,7 +1006,7 @@ fn test_pagination_offset_and_limit() {
 
 #[test]
 fn test_pagination_offset_beyond_end_returns_empty() {
-    let (env, vault, token, _admin, alice) = setup();
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     assert_eq!(vault.get_depositors(&10, &5).len(), 0);
@@ -1085,7 +1138,7 @@ fn test_auth_emergency_withdraw_requires_admin() {
 
 #[test]
 fn test_auth_renounce_admin_requires_admin() {
-    let (env, vault, _token, admin, _alice) = setup();
+    let (env, vault, _token, admin, _alice, _fee) = setup();
     vault.renounce_admin(&admin);
     assert_eq!(env.auths()[0].0, admin);
 }
@@ -1134,4 +1187,108 @@ fn test_redeposit_after_emergency_withdraw_succeeds() {
     let new_unlock = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &500, &new_unlock, &0);
     assert_eq!(vault.get_vault(&alice).unwrap().amount, 500);
+}
+
+// ================================================================
+//  Multi-user isolation integration test (#26)
+// ================================================================
+
+#[test]
+fn test_multi_user_concurrent_deposit_and_sequential_withdrawal() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let token_client = TokenClient::new(&env, &token);
+    StellarAssetClient::new(&env, &token).mint(&bob, &2_000);
+
+    // Alice deposits 1,000 with 1-hour lock; Bob deposits 2,000 with 2-hour lock.
+    let now = env.ledger().timestamp();
+    vault.deposit(&alice, &token, &1_000, &(now + 3600), &0);
+    vault.deposit(&bob,   &token, &2_000, &(now + 7200), &0);
+
+    // Advance 1 hour — Alice unlocked, Bob still locked.
+    advance_time(&env, 3601);
+
+    vault.withdraw(&alice);
+    assert_eq!(vault.try_withdraw(&bob), Err(Ok(VaultError::FundsStillLocked)));
+
+    // Alice's vault is gone; Bob's is intact.
+    assert!(vault.get_vault(&alice).is_none());
+    assert_eq!(vault.get_vault(&bob).unwrap().amount, 2_000);
+
+    // Advance 1 more hour — Bob now unlocked.
+    advance_time(&env, 3600);
+
+    vault.withdraw(&bob);
+    assert!(vault.get_vault(&bob).is_none());
+
+    // Both balances fully restored; contract holds nothing.
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert_eq!(token_client.balance(&bob),    2_000);
+    assert_eq!(token_client.balance(&vault.address), 0);
+}
+
+// ================================================================
+//  #93 – cancel_transfer_admin → accept_admin fails
+// ================================================================
+
+#[test]
+fn test_cancel_transfer_admin_then_accept_admin_fails() {
+    let (env, vault, _token, admin, _alice) = setup();
+    let new_admin: Address = Address::generate(&env);
+
+    vault.transfer_admin(&admin, &new_admin);
+    vault.cancel_transfer_admin(&admin);
+
+    // After cancellation, new_admin is no longer pending — accept must fail.
+    assert_eq!(
+        vault.try_accept_admin(&new_admin),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+// ================================================================
+//  #94 – get_pending_admin returns None after accept_admin
+// ================================================================
+
+#[test]
+fn test_get_pending_admin_none_after_accept_admin() {
+    let (env, vault, _token, admin, _alice) = setup();
+    let new_admin: Address = Address::generate(&env);
+
+    vault.transfer_admin(&admin, &new_admin);
+    vault.accept_admin(&new_admin);
+
+    assert_eq!(vault.get_pending_admin(), None);
+}
+
+// ================================================================
+//  #95 – emergency_withdraw fails after renounce_admin
+// ================================================================
+
+#[test]
+fn test_emergency_withdraw_fails_after_renounce_admin() {
+    let (env, vault, token, admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 86400;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    vault.renounce_admin(&admin);
+
+    assert_eq!(
+        vault.try_emergency_withdraw(&admin, &alice),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+// ================================================================
+//  #96 – deposit exact MAX_DEPOSIT_AMOUNT succeeds
+// ================================================================
+
+#[test]
+fn test_deposit_exact_max_amount_succeeds() {
+    let (env, vault, token, _admin, alice) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &MAX_DEPOSIT_AMOUNT);
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    assert!(vault.try_deposit(&alice, &token, &MAX_DEPOSIT_AMOUNT, &unlock_time, &0).is_ok());
+    assert_eq!(vault.get_vault(&alice).unwrap().amount, MAX_DEPOSIT_AMOUNT);
 }
