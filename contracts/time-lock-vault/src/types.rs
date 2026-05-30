@@ -1,16 +1,21 @@
 use soroban_sdk::{contracttype, Address};
 
 // ----------------------------------------------------------------
+//  Protocol constants
+// ----------------------------------------------------------------
+
+pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
+pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
+
+// ----------------------------------------------------------------
 //  Storage Keys
 // ----------------------------------------------------------------
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaultKey {
-    /// Maps (depositor, deposit_id) → VaultEntry
-    Deposit(Address, u32),
-    /// Per-depositor monotonic counter for deposit IDs
-    DepositCounter(Address),
+    /// Maps depositor → VaultEntry (single deposit per address)
+    Deposit(Address),
     /// Contract-level admin address
     Admin,
     PendingAdmin,
@@ -20,12 +25,10 @@ pub enum VaultKey {
     DepositorList,
     /// Address that receives penalty fees on early cancellation
     FeeRecipient,
-    /// Runtime-configurable max deposit amount (overrides compile-time constant)
+    /// Runtime-configurable max deposit amount (overrides compile-time constant).
     MaxDeposit,
-    /// Runtime-configurable max lock duration in seconds (overrides compile-time constant)
+    /// Runtime-configurable max lock duration in seconds (overrides compile-time constant).
     MaxLockSecs,
-    /// Optional beneficiary for a depositor's vault (Address → Address)
-    Beneficiary(Address),
 }
 
 // ----------------------------------------------------------------
@@ -39,17 +42,9 @@ pub struct VaultEntry {
     pub token: Address,
     pub amount: i128,
     pub unlock_time: u64,
-    /// Early-exit penalty in basis points (0–10000). Charged on cancel_deposit.
-    pub penalty_bps: u32,
-    /// Optional beneficiary who receives funds on withdrawal instead of the depositor.
-    pub beneficiary: Option<Address>,
-}
-
-/// Per-depositor result returned by `batch_emergency_withdraw`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WithdrawResult {
     pub depositor: Address,
-    /// `true` if funds were successfully transferred; `false` if skipped (no deposit).
-    pub success: bool,
+
+    /// Early-exit penalty in basis points (0–10000). Charged on cancel_deposit.
+    /// 0 = free cancellation, 10000 = 100% penalty (all funds go to fee_recipient).
+    pub penalty_bps: u32,
 }
