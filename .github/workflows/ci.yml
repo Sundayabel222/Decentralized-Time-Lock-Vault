@@ -157,6 +157,9 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ matrix.toolchain }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: ${{ runner.os }}-cargo-wasm-${{ matrix.toolchain }}-
 
+      - name: Check WASM target
+        run: cargo check --target wasm32-unknown-unknown
+
       - name: Build release WASM
         run: cargo build --target wasm32-unknown-unknown --release
 
@@ -178,6 +181,21 @@ jobs:
           stellar contract optimize \
             --wasm target/wasm32-unknown-unknown/release/time_lock_vault.wasm \
             --wasm-out target/time_lock_vault.optimized.wasm
+
+      - name: Check WASM size regression
+        env:
+          MAX_WASM_BYTES: 51200  # 50 KB threshold
+        run: |
+          ACTUAL=$(wc -c < target/time_lock_vault.optimized.wasm)
+          echo "Optimized WASM size: ${ACTUAL} bytes (threshold: ${MAX_WASM_BYTES} bytes)"
+          if [ "$ACTUAL" -gt "$MAX_WASM_BYTES" ]; then
+            echo "❌ ERROR: WASM size regression detected!"
+            echo "WASM is too large: ${ACTUAL} bytes exceeds threshold of ${MAX_WASM_BYTES} bytes (50 KB)"
+            echo "This will increase deployment costs on Stellar."
+            exit 1
+          else
+            echo "✅ WASM size check passed: ${ACTUAL} bytes is within the ${MAX_WASM_BYTES} byte limit"
+          fi
 
       - name: Check WASM size
         env:
