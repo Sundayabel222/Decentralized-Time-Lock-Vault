@@ -61,6 +61,9 @@ echo "    Contract ID: $CONTRACT_ID"
 
 # ---- Initialize contract -------------------------------------
 echo ">>> Initializing contract with admin = $DEPLOYER_ADDRESS ..."
+# fee_recipient receives penalty fees from cancel_deposit; set to deployer by default.
+# Override FEE_RECIPIENT before running if a separate address is desired.
+FEE_RECIPIENT="${FEE_RECIPIENT:-$DEPLOYER_ADDRESS}"
 soroban contract invoke \
   --id "$CONTRACT_ID" \
   --source "$SOROBAN_SECRET_KEY" \
@@ -68,7 +71,8 @@ soroban contract invoke \
   --rpc-url "$RPC_URL" \
   --network-passphrase "$NETWORK_PASSPHRASE" \
   -- initialize \
-  --admin "$DEPLOYER_ADDRESS"
+  --admin "$DEPLOYER_ADDRESS" \
+  --fee_recipient "$FEE_RECIPIENT"
 
 echo "    Contract initialized."
 
