@@ -9,7 +9,7 @@ use crate::{
     constants::{MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS},
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS, MAX_BATCH_SIZE},
+    types::{VaultEntry, LedgerVaultEntry},
 };
 
 #[contract]
@@ -360,21 +360,37 @@ impl TimeLockVault {
         deposit_id: u32,
     ) -> Result<(), VaultError> {
         admin.require_auth();
-        storage::require_admin(&env, &admin)?;
-
-        let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id)
-            .ok_or(VaultError::NoDepositFound)?;
-
-        storage::remove_deposit(&env, &depositor, deposit_id);
-        if storage::get_deposit_ids(&env, &depositor).len() == 0 {
-            storage::remove_depositor(&env, &depositor);
+        let stored_admin = storage::get_admin(&env).ok_or(VaultError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(VaultError::Unauthorized);
         }
 
-        let token_client = token::Client::new(&env, &entry.token);
-        token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+        // Try timestamp-based deposit first, then fall back to ledger-based deposit.
+        // Security model: funds always return to the depositor — never to the admin.
+        // CEI pattern: state cleared before token transfer in both branches.
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            storage::remove_deposit(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
+            let token_client = token::Client::new(&env, &entry.token);
+            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            events::emergency_withdraw(&env, &admin, &depositor, deposit_id, &entry.token, entry.amount);
+            return Ok(());
+        }
 
-        events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
-        Ok(())
+        if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
+            let token_client = token::Client::new(&env, &entry.token);
+            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            events::emergency_withdraw(&env, &admin, &depositor, deposit_id, &entry.token, entry.amount);
+            return Ok(());
+        }
+
+        Err(VaultError::NoDepositFound)
     }
 
     // ----------------------------------------------------------------

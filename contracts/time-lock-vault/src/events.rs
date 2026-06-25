@@ -14,6 +14,7 @@ pub fn emergency_withdraw(
     env: &Env,
     admin: &Address,
     depositor: &Address,
+    deposit_id: u32,
     token: &Address,
     amount: i128,
 ) {
@@ -21,7 +22,7 @@ pub fn emergency_withdraw(
     // leaking the admin address in the publicly-indexed event topic stream.
     let topics = (Symbol::new(env, "emrg_wdraw"), depositor.clone());
     env.events()
-        .publish(topics, (admin.clone(), token.clone(), amount));
+        .publish(topics, (deposit_id, admin.clone(), token.clone(), amount));
 }
 
 pub fn admin_transfer_initiated(env: &Env, current_admin: &Address, pending_admin: &Address) {

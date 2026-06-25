@@ -725,6 +725,95 @@ fn test_emergency_withdraw_no_deposit_fails() {
 }
 
 // ================================================================
+//  Emergency Withdrawal — ledger-based deposits (issue #281)
+// ================================================================
+
+fn advance_ledger(env: &Env, ledgers: u32) {
+    env.ledger().set(LedgerInfo {
+        timestamp: env.ledger().timestamp(),
+        protocol_version: env.ledger().protocol_version(),
+        sequence_number: env.ledger().sequence() + ledgers,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 33_000_000,
+    });
+}
+
+#[test]
+fn test_emergency_withdraw_ledger_deposit_before_unlock_succeeds() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+    let unlock_ledger = env.ledger().sequence() + 1000;
+    vault.deposit_by_ledger(&alice, &token, &2_000, &unlock_ledger, &0);
+
+    // Admin recovers funds before unlock_ledger is reached
+    vault.emergency_withdraw(&admin, &alice, &0);
+
+    assert!(vault.get_vault(&alice, &0).is_none());
+    assert_eq!(token_client.balance(&alice), 10_000);
+}
+
+#[test]
+fn test_emergency_withdraw_ledger_deposit_funds_go_to_depositor() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+    let contract_address = vault.address.clone();
+    let unlock_ledger = env.ledger().sequence() + 500;
+    vault.deposit_by_ledger(&alice, &token, &3_000, &unlock_ledger, &0);
+
+    assert_eq!(token_client.balance(&contract_address), 3_000);
+    vault.emergency_withdraw(&admin, &alice, &0);
+
+    // Funds returned to depositor, not to admin
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert_eq!(token_client.balance(&contract_address), 0);
+}
+
+#[test]
+fn test_emergency_withdraw_ledger_deposit_emits_event() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let unlock_ledger = env.ledger().sequence() + 1000;
+    vault.deposit_by_ledger(&alice, &token, &2_000, &unlock_ledger, &0);
+
+    vault.emergency_withdraw(&admin, &alice, &0);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    assert_eq!(
+        last,
+        (
+            vault.address.clone(),
+            (Symbol::new(&env, "emrg_wdraw"), alice.clone()).into_val(&env),
+            (0_u32, admin.clone(), token.clone(), 2_000_i128).into_val(&env),
+        )
+    );
+}
+
+#[test]
+fn test_emergency_withdraw_ledger_deposit_non_admin_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let unlock_ledger = env.ledger().sequence() + 500;
+    vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    let result = vault.try_emergency_withdraw(&bob, &alice, &0);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+#[test]
+fn test_emergency_withdraw_ledger_deposit_removes_from_depositor_list() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let unlock_ledger = env.ledger().sequence() + 500;
+    vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    assert_eq!(vault.get_depositor_count(), 1);
+    vault.emergency_withdraw(&admin, &alice, &0);
+    assert_eq!(vault.get_depositor_count(), 0);
+}
+
+// ================================================================
 //  Admin Transfer — two-step
 // ================================================================
 
