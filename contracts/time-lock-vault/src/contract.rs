@@ -627,6 +627,76 @@ impl TimeLockVault {
     }
 
     // ----------------------------------------------------------------
+    //  Admin: Migration
+    // ----------------------------------------------------------------
+
+    pub fn migrate_deposit_to_ledger(
+        env: Env,
+        admin: Address,
+        depositor: Address,
+        deposit_id: u32,
+        new_unlock_ledger: u32,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let entry = storage::get_deposit(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+
+        let current_ledger = env.ledger().sequence();
+        if new_unlock_ledger <= current_ledger {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+
+        let ledger_entry = LedgerVaultEntry {
+            token: entry.token.clone(),
+            amount: entry.amount,
+            unlock_ledger: new_unlock_ledger,
+            depositor: entry.depositor.clone(),
+            penalty_bps: entry.penalty_bps,
+        };
+
+        storage::remove_deposit(&env, &depositor, deposit_id);
+        storage::set_deposit_by_ledger(&env, &depositor, deposit_id, &ledger_entry);
+
+        events::migrated(&env, &depositor, deposit_id, true, false);
+        Ok(())
+    }
+
+    pub fn migrate_deposit_to_time(
+        env: Env,
+        admin: Address,
+        depositor: Address,
+        deposit_id: u32,
+        new_unlock_time: u64,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let entry = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+
+        let now = env.ledger().timestamp();
+        if new_unlock_time <= now {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+
+        let time_entry = VaultEntry {
+            token: entry.token.clone(),
+            amount: entry.amount,
+            unlock_time: new_unlock_time,
+            depositor: entry.depositor.clone(),
+            penalty_bps: entry.penalty_bps,
+        };
+
+        storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+        storage::set_deposit(&env, &depositor, deposit_id, &time_entry);
+
+        events::migrated(&env, &depositor, deposit_id, false, true);
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------
     //  Admin: Freeze / Unfreeze
     // ----------------------------------------------------------------
 

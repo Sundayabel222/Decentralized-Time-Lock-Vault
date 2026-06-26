@@ -943,6 +943,76 @@ fn test_unfreeze_restores_deposit_capability() {
 }
 
 // ================================================================
+//  Migration
+// ================================================================
+
+#[test]
+fn test_migrate_time_to_ledger_succeeds() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    let new_unlock_ledger = env.ledger().sequence() + 500;
+    vault.migrate_deposit_to_ledger(&admin, &alice, &id, &new_unlock_ledger);
+
+    assert!(vault.get_vault(&alice, &id).is_none());
+    let ledger_entry = vault.get_vault_by_ledger(&alice, &id).expect("should exist after migration");
+    assert_eq!(ledger_entry.unlock_ledger, new_unlock_ledger);
+    assert_eq!(ledger_entry.amount, 1_000);
+}
+
+#[test]
+fn test_migrate_ledger_to_time_succeeds() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let unlock_ledger = env.ledger().sequence() + 1000;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    let new_unlock_time = env.ledger().timestamp() + 7200;
+    vault.migrate_deposit_to_time(&admin, &alice, &id, &new_unlock_time);
+
+    assert!(vault.get_vault_by_ledger(&alice, &id).is_none());
+    let time_entry = vault.get_vault(&alice, &id).expect("should exist after migration");
+    assert_eq!(time_entry.unlock_time, new_unlock_time);
+    assert_eq!(time_entry.amount, 1_000);
+}
+
+#[test]
+fn test_migrate_by_non_admin_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    assert_eq!(
+        vault.try_migrate_deposit_to_ledger(&bob, &alice, &id, &(env.ledger().sequence() + 500)),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_migrate_nonexistent_deposit_fails() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+    assert_eq!(
+        vault.try_migrate_deposit_to_ledger(&admin, &alice, &0, &(env.ledger().sequence() + 500)),
+        Err(Ok(VaultError::NoDepositFound))
+    );
+}
+
+#[test]
+fn test_migrate_deposit_preserves_amount() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &5_000, &unlock_time, &500);
+
+    let new_unlock_ledger = env.ledger().sequence() + 500;
+    vault.migrate_deposit_to_ledger(&admin, &alice, &id, &new_unlock_ledger);
+
+    let entry = vault.get_vault_by_ledger(&alice, &id).expect("should exist after migration");
+    assert_eq!(entry.amount, 5_000);
+    assert_eq!(entry.penalty_bps, 500);
+}
+
+// ================================================================
 //  Configurable limits
 // ================================================================
 

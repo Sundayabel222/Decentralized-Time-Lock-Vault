@@ -23,4 +23,5 @@ pub enum VaultError {
     /// `MAX_BATCH_SIZE`.
     BatchTooLarge = 14,
     DepositorFrozen = 15,
+    MigrationNotAllowed = 16,
 }
