@@ -93,8 +93,8 @@ impl TimeLockVault {
             return Err(VaultError::LockDurationTooLong);
         }
 
-        // --- Duplicate deposit guard ---
-        if storage::has_deposit(&env, &depositor) {
+        // --- Duplicate deposit guard (single read, no TTL bump) ---
+        if storage::get_deposit_readonly(&env, &depositor).is_some() {
             return Err(VaultError::DepositAlreadyExists);
         }
 
@@ -107,7 +107,6 @@ impl TimeLockVault {
             token: token.clone(),
             amount,
             unlock_time,
-            depositor: depositor.clone(),
         };
         storage::set_deposit(&env, &depositor, &entry);
 
@@ -133,8 +132,8 @@ impl TimeLockVault {
         // --- Auth ---
         depositor.require_auth();
 
-        // --- Load deposit (bumps TTL — this is a state-changing call) ---
-        let entry = storage::get_deposit(&env, &depositor)
+        // --- Load deposit (no TTL bump — entry is about to be removed) ---
+        let entry = storage::get_deposit_readonly(&env, &depositor)
             .ok_or(VaultError::NoDepositFound)?;
 
         // --- Time check ---
@@ -188,8 +187,8 @@ impl TimeLockVault {
             return Err(VaultError::Unauthorized);
         }
 
-        // --- Load deposit ---
-        let entry = storage::get_deposit(&env, &depositor)
+        // --- Load deposit (no TTL bump — entry is about to be removed) ---
+        let entry = storage::get_deposit_readonly(&env, &depositor)
             .ok_or(VaultError::NoDepositFound)?;
 
         // --- Checks-Effects-Interactions ---

@@ -27,22 +27,9 @@ pub fn set_deposit(env: &Env, depositor: &Address, entry: &VaultEntry) {
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
-/// Retrieve the vault entry for `depositor` — bumps TTL (use for writes/mutations).
-pub fn get_deposit(env: &Env, depositor: &Address) -> Option<VaultEntry> {
-    let key = VaultKey::Deposit(depositor.clone());
-    let entry: Option<VaultEntry> = env.storage().persistent().get(&key);
-    if entry.is_some() {
-        // Refresh TTL so active vaults never expire during state-changing calls.
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    }
-    entry
-}
-
 /// Retrieve the vault entry for `depositor` — does NOT bump TTL.
-/// Use this in read-only / view functions to avoid charging callers
-/// for unnecessary storage write operations.
+/// Use this for all reads (writes/mutations as well as view functions)
+/// since mutations that follow will either remove the entry or replace it.
 pub fn get_deposit_readonly(env: &Env, depositor: &Address) -> Option<VaultEntry> {
     let key = VaultKey::Deposit(depositor.clone());
     env.storage().persistent().get(&key)
@@ -52,12 +39,6 @@ pub fn get_deposit_readonly(env: &Env, depositor: &Address) -> Option<VaultEntry
 pub fn remove_deposit(env: &Env, depositor: &Address) {
     let key = VaultKey::Deposit(depositor.clone());
     env.storage().persistent().remove(&key);
-}
-
-/// Returns `true` if a deposit record exists for `depositor`.
-pub fn has_deposit(env: &Env, depositor: &Address) -> bool {
-    let key = VaultKey::Deposit(depositor.clone());
-    env.storage().persistent().has(&key)
 }
 
 // ----------------------------------------------------------------

@@ -87,7 +87,6 @@ fn test_deposit_success() {
     assert_eq!(entry.amount, 1_000);
     assert_eq!(entry.unlock_time, unlock_time);
     assert_eq!(entry.token, token);
-    assert_eq!(entry.depositor, alice);
 }
 
 #[test]
@@ -510,7 +509,7 @@ fn test_redeposit_after_withdraw_succeeds() {
 fn test_get_vault_is_readonly() {
     // Calling get_vault on a non-existent entry should return None cleanly
     // without panicking or creating storage entries.
-    let (env, vault, _token, _admin, alice) = setup();
+    let (_env, vault, _token, _admin, alice) = setup();
     assert!(vault.get_vault(&alice).is_none());
     // Calling again should still return None (no side effects)
     assert!(vault.get_vault(&alice).is_none());
@@ -518,8 +517,108 @@ fn test_get_vault_is_readonly() {
 
 #[test]
 fn test_time_remaining_is_readonly() {
-    let (env, vault, _token, _admin, alice) = setup();
+    let (_env, vault, _token, _admin, alice) = setup();
     // Multiple calls should be idempotent
     assert_eq!(vault.time_remaining(&alice), 0);
     assert_eq!(vault.time_remaining(&alice), 0);
+}
+
+// ================================================================
+//  Storage / computation efficiency tests
+// ================================================================
+
+/// deposit() must not double-read storage: after a successful deposit the
+/// duplicate-guard (now using get_deposit_readonly) should still fire.
+#[test]
+fn test_deposit_duplicate_guard_uses_single_read() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+
+    // Second deposit must fail — guard must catch it without a TTL-bumping read.
+    let result = vault.try_deposit(&alice, &token, &1, &unlock_time);
+    assert_eq!(result, Err(Ok(VaultError::DepositAlreadyExists)));
+}
+
+/// VaultEntry no longer stores depositor; verify the entry fields are exact.
+#[test]
+fn test_vault_entry_has_no_depositor_field() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &777, &unlock_time);
+
+    let entry = vault.get_vault(&alice).expect("entry should exist");
+    // Only three fields: token, amount, unlock_time.
+    assert_eq!(entry.token, token);
+    assert_eq!(entry.amount, 777);
+    assert_eq!(entry.unlock_time, unlock_time);
+}
+
+/// withdraw() must not bump TTL on an entry it is about to delete.
+/// Observable effect: withdraw on a locked vault must still return
+/// FundsStillLocked (entry is loaded readonly, state is intact).
+#[test]
+fn test_withdraw_before_unlock_does_not_bump_ttl() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &500, &unlock_time);
+
+    // Entry still locked — withdraw must fail.
+    let result = vault.try_withdraw(&alice);
+    assert_eq!(result, Err(Ok(VaultError::FundsStillLocked)));
+
+    // Entry must still be present (readonly load did not corrupt state).
+    assert!(vault.get_vault(&alice).is_some());
+}
+
+/// emergency_withdraw() must not bump TTL before removing the entry.
+#[test]
+fn test_emergency_withdraw_does_not_bump_ttl_before_remove() {
+    let (env, vault, token, admin, alice) = setup();
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    let unlock_time = env.ledger().timestamp() + 86_400;
+    vault.deposit(&alice, &token, &1_000, &unlock_time);
+
+    vault.emergency_withdraw(&admin, &alice);
+
+    // Entry must be gone; funds returned to alice.
+    assert!(vault.get_vault(&alice).is_none());
+    assert_eq!(token_client.balance(&alice), 10_000);
+}
+
+/// Boundary: amount == 1 (minimum valid amount).
+#[test]
+fn test_deposit_minimum_amount_succeeds() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1, &unlock_time);
+    let entry = vault.get_vault(&alice).expect("entry should exist");
+    assert_eq!(entry.amount, 1);
+}
+
+/// Boundary: unlock_time == now + 1 (minimum valid future timestamp).
+#[test]
+fn test_deposit_minimum_unlock_time_succeeds() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + 1;
+    vault.deposit(&alice, &token, &1, &unlock_time);
+    assert!(vault.get_vault(&alice).is_some());
+}
+
+/// Boundary: unlock_time == now + MAX_LOCK_DURATION_SECS (maximum valid duration).
+#[test]
+fn test_deposit_max_duration_boundary_succeeds() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + MAX_LOCK_DURATION_SECS;
+    vault.deposit(&alice, &token, &1, &unlock_time);
+    assert!(vault.get_vault(&alice).is_some());
+}
+
+/// Boundary: unlock_time == now + MAX_LOCK_DURATION_SECS + 1 (one second over limit).
+#[test]
+fn test_deposit_one_second_over_max_duration_fails() {
+    let (env, vault, token, _admin, alice) = setup();
+    let unlock_time = env.ledger().timestamp() + MAX_LOCK_DURATION_SECS + 1;
+    let result = vault.try_deposit(&alice, &token, &1, &unlock_time);
+    assert_eq!(result, Err(Ok(VaultError::LockDurationTooLong)));
 }
