@@ -14,6 +14,10 @@ pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 /// risk expiry before the user can withdraw.
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
 
+/// Maximum number of depositor addresses returned in a single page.
+/// Hard cap applied in `get_depositors_page` to prevent unbounded iteration.
+pub const MAX_PAGE_LIMIT: u32 = 20;
+
 // ----------------------------------------------------------------
 //  Storage Keys
 // ----------------------------------------------------------------
@@ -29,6 +33,8 @@ pub enum VaultKey {
     Admin,
     /// Pending admin address during a two-step admin transfer
     PendingAdmin,
+    /// Ordered list of all depositor addresses (for pagination)
+    DepositorIndex,
 }
 
 // ----------------------------------------------------------------

@@ -1,10 +1,10 @@
-use soroban_sdk::{contract, contractimpl, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
 use crate::{
     errors::VaultError,
     events,
     storage,
-    types::{VaultEntry, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
+    types::{VaultEntry, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MAX_PAGE_LIMIT},
 };
 
 // ============================================================
@@ -110,6 +110,7 @@ impl TimeLockVault {
             depositor: depositor.clone(),
         };
         storage::set_deposit(&env, &depositor, &entry);
+        storage::add_to_depositor_index(&env, &depositor);
 
         // --- Emit event ---
         events::deposit(&env, &depositor, &token, amount, unlock_time);
@@ -145,6 +146,7 @@ impl TimeLockVault {
 
         // --- Checks-Effects-Interactions: clear storage BEFORE external call ---
         storage::remove_deposit(&env, &depositor);
+        storage::remove_from_depositor_index(&env, &depositor);
 
         // --- Transfer tokens from contract → depositor ---
         let token_client = token::Client::new(&env, &entry.token);
@@ -194,6 +196,7 @@ impl TimeLockVault {
 
         // --- Checks-Effects-Interactions ---
         storage::remove_deposit(&env, &depositor);
+        storage::remove_from_depositor_index(&env, &depositor);
 
         // --- Return funds to depositor (NOT to admin) ---
         let token_client = token::Client::new(&env, &entry.token);
@@ -333,7 +336,7 @@ impl TimeLockVault {
                 if now >= entry.unlock_time {
                     0
                 } else {
-                    entry.unlock_time - now
+                    entry.unlock_time.saturating_sub(now)
                 }
             }
         }
@@ -352,5 +355,27 @@ impl TimeLockVault {
     /// Returns the protocol constants for client-side validation.
     pub fn get_constants(_env: Env) -> (i128, u64) {
         (MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS)
+    }
+
+    /// Returns a page of depositor addresses.
+    ///
+    /// `limit` is silently capped at `MAX_PAGE_LIMIT` (20) to prevent
+    /// unbounded iteration and runaway ledger resource usage.
+    ///
+    /// # Arguments
+    /// * `page`  — Zero-based page index.
+    /// * `limit` — Requested page size; capped at MAX_PAGE_LIMIT.
+    pub fn get_depositors_page(env: Env, page: u32, limit: u32) -> Vec<Address> {
+        let capped = limit.min(MAX_PAGE_LIMIT);
+        let all = storage::get_depositor_index(&env);
+        let total = all.len();
+        let start = page.saturating_mul(capped);
+        let mut result: Vec<Address> = Vec::new(&env);
+        let mut i = start;
+        while i < total && i < start.saturating_add(capped) {
+            result.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        result
     }
 }

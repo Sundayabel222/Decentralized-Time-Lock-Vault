@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 
 use crate::types::{VaultEntry, VaultKey};
 
@@ -58,6 +58,47 @@ pub fn remove_deposit(env: &Env, depositor: &Address) {
 pub fn has_deposit(env: &Env, depositor: &Address) -> bool {
     let key = VaultKey::Deposit(depositor.clone());
     env.storage().persistent().has(&key)
+}
+
+// ----------------------------------------------------------------
+//  Depositor index helpers (for paginated queries)
+// ----------------------------------------------------------------
+
+/// Load the full depositor index. Returns an empty Vec if not yet set.
+pub fn get_depositor_index(env: &Env) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::DepositorIndex)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Append `depositor` to the index (called on first deposit).
+pub fn add_to_depositor_index(env: &Env, depositor: &Address) {
+    let mut list = get_depositor_index(env);
+    list.push_back(depositor.clone());
+    env.storage()
+        .persistent()
+        .set(&VaultKey::DepositorIndex, &list);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::DepositorIndex, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Remove `depositor` from the index (called on withdrawal/emergency_withdraw).
+pub fn remove_from_depositor_index(env: &Env, depositor: &Address) {
+    let list = get_depositor_index(env);
+    let mut new_list: Vec<Address> = Vec::new(env);
+    for addr in list.iter() {
+        if &addr != depositor {
+            new_list.push_back(addr);
+        }
+    }
+    env.storage()
+        .persistent()
+        .set(&VaultKey::DepositorIndex, &new_list);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::DepositorIndex, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
 // ----------------------------------------------------------------
