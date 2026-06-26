@@ -381,16 +381,28 @@ impl TimeLockVault {
         admin.require_auth();
         storage::require_admin(&env, &admin)?;
 
-        let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id)
-            .ok_or(VaultError::NoDepositFound)?;
-
-        storage::remove_deposit(&env, &depositor, deposit_id);
-        if !storage::has_any_deposit(&env, &depositor) {
-            storage::remove_depositor(&env, &depositor);
+        // Try timestamp-based deposit first, then ledger-based.
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            storage::remove_deposit(&env, &depositor, deposit_id);
+            if !storage::has_any_deposit(&env, &depositor) {
+                storage::remove_depositor(&env, &depositor);
+            }
+            let token_client = token::Client::new(&env, &entry.token);
+            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
+            return Ok(());
         }
 
-        let token_client = token::Client::new(&env, &entry.token);
-        token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+        if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+            if !storage::has_any_deposit(&env, &depositor) {
+                storage::remove_depositor(&env, &depositor);
+            }
+            let token_client = token::Client::new(&env, &entry.token);
+            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
+            return Ok(());
+        }
 
         events::emergency_withdraw(&env, &admin, &depositor, &entry.token, deposit_id, entry.amount);
         Ok(())

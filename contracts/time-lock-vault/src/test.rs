@@ -56,6 +56,19 @@ fn advance_time(env: &Env, seconds: u64) {
     });
 }
 
+fn advance_ledger(env: &Env, ledgers: u32) {
+    env.ledger().set(LedgerInfo {
+        timestamp: env.ledger().timestamp(),
+        protocol_version: env.ledger().protocol_version(),
+        sequence_number: env.ledger().sequence() + ledgers,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 33_000_000,
+    });
+}
+
 // ================================================================
 //  Initialization
 // ================================================================

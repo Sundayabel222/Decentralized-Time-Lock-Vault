@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env, Vec};
 
-use crate::constants::MAX_LOCK_DURATION_SECS;
+use crate::constants::{MAX_BATCH_SIZE, MAX_LOCK_DURATION_SECS};
 use crate::types::{LedgerVaultEntry, VaultEntry, VaultKey};
 
 // Number of seconds per ledger — Soroban ledgers are ~5 seconds apart.
