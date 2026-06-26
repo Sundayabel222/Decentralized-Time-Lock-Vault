@@ -628,9 +628,10 @@ fn test_cancel_deposit_after_unlock_fails() {
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &500);
     advance_time(&env, 3601);
+    // Vault is past unlock_time — caller should use `withdraw` instead.
     assert_eq!(
         vault.try_cancel_deposit(&alice, &0),
-        Err(Ok(VaultError::FundsStillLocked))
+        Err(Ok(VaultError::FundsAlreadyUnlocked))
     );
 }
 
@@ -1444,4 +1445,167 @@ fn test_full_lifecycle_deposit_withdraw_redeposit() {
     let new_id = vault.deposit(&alice, &token, &500, &new_unlock, &0);
     assert!(vault.get_vault(&alice, &new_id).is_some());
     assert_eq!(vault.get_vault(&alice, &new_id).unwrap().amount, 500);
+}
+
+// ================================================================
+//  batch_emergency_withdraw
+// ================================================================
+
+#[test]
+fn test_batch_emergency_withdraw_all_succeed() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&bob, &5_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let unlock_time = env.ledger().timestamp() + 86400;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+
+    let targets: soroban_sdk::Vec<(Address, u32)> = {
+        let mut v = soroban_sdk::Vec::new(&env);
+        v.push_back((alice.clone(), 0_u32));
+        v.push_back((bob.clone(), 0_u32));
+        v
+    };
+
+    let results = vault.batch_emergency_withdraw(&admin, &targets);
+    assert_eq!(results.len(), 2);
+    assert!(results.get(0).unwrap().success);
+    assert!(results.get(1).unwrap().success);
+
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert_eq!(token_client.balance(&bob), 5_000);
+    assert_eq!(vault.get_depositor_count(), 0);
+}
+
+#[test]
+fn test_batch_emergency_withdraw_skips_missing() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    let unlock_time = env.ledger().timestamp() + 86400;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // bob has no deposit
+    let targets: soroban_sdk::Vec<(Address, u32)> = {
+        let mut v = soroban_sdk::Vec::new(&env);
+        v.push_back((alice.clone(), 0_u32));
+        v.push_back((bob.clone(), 0_u32));
+        v
+    };
+
+    let results = vault.batch_emergency_withdraw(&admin, &targets);
+    assert_eq!(results.len(), 2);
+    assert!(results.get(0).unwrap().success);
+    assert!(!results.get(1).unwrap().success);
+    assert_eq!(vault.get_depositor_count(), 0);
+}
+
+#[test]
+fn test_batch_emergency_withdraw_non_admin_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let unlock_time = env.ledger().timestamp() + 86400;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    let targets: soroban_sdk::Vec<(Address, u32)> = {
+        let mut v = soroban_sdk::Vec::new(&env);
+        v.push_back((alice.clone(), 0_u32));
+        v
+    };
+
+    assert_eq!(
+        vault.try_batch_emergency_withdraw(&bob, &targets),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_batch_emergency_withdraw_too_large_fails() {
+    use crate::types::MAX_BATCH_SIZE;
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+
+    let mut targets: soroban_sdk::Vec<(Address, u32)> = soroban_sdk::Vec::new(&env);
+    for _ in 0..=MAX_BATCH_SIZE {
+        targets.push_back((Address::generate(&env), 0_u32));
+    }
+
+    assert_eq!(
+        vault.try_batch_emergency_withdraw(&admin, &targets),
+        Err(Ok(VaultError::BatchTooLarge))
+    );
+}
+
+// ================================================================
+//  get_deposit_ids — active-ID tracking (O(k) not O(counter))
+// ================================================================
+
+#[test]
+fn test_get_deposit_ids_reflects_only_active_deposits() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &5_000);
+
+    let t1 = env.ledger().timestamp() + 3600;
+    let t2 = env.ledger().timestamp() + 7200;
+    let t3 = env.ledger().timestamp() + 10800;
+
+    vault.deposit(&alice, &token, &1_000, &t1, &0); // id 0
+    vault.deposit(&alice, &token, &1_000, &t2, &0); // id 1
+    vault.deposit(&alice, &token, &1_000, &t3, &0); // id 2
+
+    // Withdraw id 1 — active list should shrink to [0, 2]
+    advance_time(&env, 7201);
+    vault.withdraw(&alice, &1);
+
+    let ids = vault.get_deposit_ids(&alice);
+    assert_eq!(ids.len(), 2);
+    // id 1 must not be in the list
+    for i in 0..ids.len() {
+        assert_ne!(ids.get(i).unwrap(), 1);
+    }
+}
+
+#[test]
+fn test_get_deposit_ids_empty_for_new_depositor() {
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
+    assert_eq!(vault.get_deposit_ids(&alice).len(), 0);
+}
+
+// ================================================================
+//  add_depositor deduplication (O(1) via DepositorMember key)
+// ================================================================
+
+#[test]
+fn test_add_depositor_no_duplicate_in_list() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &5_000);
+
+    let t1 = env.ledger().timestamp() + 3600;
+    let t2 = env.ledger().timestamp() + 7200;
+
+    // Two deposits from the same depositor — should appear once in list
+    vault.deposit(&alice, &token, &1_000, &t1, &0);
+    vault.deposit(&alice, &token, &1_000, &t2, &0);
+
+    assert_eq!(vault.get_depositor_count(), 1);
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap(), alice);
+}
+
+// ================================================================
+//  FundsAlreadyUnlocked error
+// ================================================================
+
+#[test]
+fn test_cancel_deposit_exactly_at_unlock_time_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    advance_time(&env, 3600); // now == unlock_time
+    assert_eq!(
+        vault.try_cancel_deposit(&alice, &0),
+        Err(Ok(VaultError::FundsAlreadyUnlocked))
+    );
 }

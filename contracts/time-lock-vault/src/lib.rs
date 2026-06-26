@@ -10,9 +10,6 @@
 // wrapping at runtime in the deterministic Soroban WASM environment.
 #![deny(clippy::arithmetic_side_effects)]
 
-// Compile-time assertion: ensure u64 is 8 bytes (closes #82)
-const _: () = assert!(std::mem::size_of::<u64>() == 8);
-
 mod constants;
 mod contract;
 mod errors;
@@ -26,6 +23,7 @@ pub use constants::{
 
 pub use contract::TimeLockVault;
 pub use contract::TimeLockVaultClient;
+pub use types::WithdrawResult;
 
 #[cfg(test)]
 mod test;
