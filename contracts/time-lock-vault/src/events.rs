@@ -36,6 +36,7 @@ pub fn emergency_withdraw(
     env: &Env,
     admin: &Address,
     depositor: &Address,
+    deposit_id: u32,
     token: &Address,
     deposit_id: u32,
     amount: i128,
