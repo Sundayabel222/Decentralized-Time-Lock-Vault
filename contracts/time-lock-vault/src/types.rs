@@ -20,6 +20,9 @@ pub enum VaultKey {
     MaxLockSecs,
     Paused,
     DepositorFrozen(Address),
+    TokenFrozen(Address),
+    MaxPenaltyBps,
+    MinCancelFee,
 }
 
 #[contracttype]
