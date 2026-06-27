@@ -124,3 +124,13 @@ pub fn migrated(env: &Env, depositor: &Address, deposit_id: u32, to_ledger: bool
     let topics = (symbol_short!("migrated"), depositor.clone());
     env.events().publish(topics, (deposit_id, to_ledger, to_time));
 }
+
+pub fn paused(env: &Env, admin: &Address) {
+    let topics = (Symbol::new(env, "paused"), admin.clone());
+    env.events().publish(topics, ());
+}
+
+pub fn unpaused(env: &Env, admin: &Address) {
+    let topics = (Symbol::new(env, "unpaused"), admin.clone());
+    env.events().publish(topics, ());
+}

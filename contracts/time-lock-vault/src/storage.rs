@@ -95,6 +95,33 @@ pub fn dec_active_count(env: &Env, depositor: &Address) {
     env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
+pub fn get_deposit_by_ledger_ids(env: &Env, depositor: &Address) -> Vec<u32> {
+    let counter_key = VaultKey::DepositCounter(depositor.clone());
+    let count: u32 = env.storage().persistent().get(&counter_key).unwrap_or(0);
+    let mut ids = Vec::new(env);
+    for id in 0..count {
+        let key = VaultKey::DepositByLedger(depositor.clone(), id);
+        if env.storage().persistent().has(&key) {
+            ids.push_back(id);
+        }
+    }
+    ids
+}
+
+pub fn get_all_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
+    let counter_key = VaultKey::DepositCounter(depositor.clone());
+    let count: u32 = env.storage().persistent().get(&counter_key).unwrap_or(0);
+    let mut ids = Vec::new(env);
+    for id in 0..count {
+        let key_ts = VaultKey::Deposit(depositor.clone(), id);
+        let key_ledger = VaultKey::DepositByLedger(depositor.clone(), id);
+        if env.storage().persistent().has(&key_ts) || env.storage().persistent().has(&key_ledger) {
+            ids.push_back(id);
+        }
+    }
+    ids
+}
+
 // ----------------------------------------------------------------
 //  Deposit helpers
 // ----------------------------------------------------------------

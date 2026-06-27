@@ -11,6 +11,7 @@ use soroban_sdk::{
 use crate::{
     constants::{MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS},
     contract::{TimeLockVault, TimeLockVaultClient},
+    constants::{MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
     errors::VaultError,
     types::VaultEntry,
 };
@@ -1038,7 +1039,7 @@ fn test_migrate_deposit_preserves_amount() {
 fn setup_with_limits(
     max_deposit: Option<i128>,
     max_lock_secs: Option<u64>,
-) -> (Env, TimeLockVaultClient<'static>, Address, Address, Address) {
+) -> (Env, TimeLockVaultClient<'static>, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1056,12 +1057,12 @@ fn setup_with_limits(
 
     vault.initialize(&admin, &fee, &max_deposit, &max_lock_secs);
 
-    (env, vault, token_address, admin, alice)
+    (env, vault, token_address, admin, alice, fee)
 }
 
 #[test]
 fn test_get_constants_returns_custom_limits() {
-    let (_env, vault, _token, _admin, _alice) = setup_with_limits(Some(5_000), Some(7200));
+    let (_env, vault, _token, _admin, _alice, _fee) = setup_with_limits(Some(5_000), Some(7200));
     let (max_amount, max_duration) = vault.get_constants();
     assert_eq!(max_amount, 5_000);
     assert_eq!(max_duration, 7200);
@@ -1069,7 +1070,7 @@ fn test_get_constants_returns_custom_limits() {
 
 #[test]
 fn test_custom_max_deposit_enforced() {
-    let (env, vault, token, _admin, alice) = setup_with_limits(Some(500), None);
+    let (env, vault, token, _admin, alice, _fee) = setup_with_limits(Some(500), None);
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &500, &unlock_time, &0);
     advance_time(&env, 3601);
@@ -1080,7 +1081,7 @@ fn test_custom_max_deposit_enforced() {
 
 #[test]
 fn test_custom_max_lock_secs_enforced() {
-    let (env, vault, token, _admin, alice) = setup_with_limits(None, Some(3600));
+    let (env, vault, token, _admin, alice, _fee) = setup_with_limits(None, Some(3600));
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &100, &unlock_time, &0);
     advance_time(&env, 3601);
@@ -1285,3 +1286,5 @@ fn test_emergency_withdraw_ledger_non_admin_fails() {
         Err(Ok(VaultError::Unauthorized))
     );
 }
+// Add to test.rs temporarily
+#[test]
