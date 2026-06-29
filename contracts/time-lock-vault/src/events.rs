@@ -109,7 +109,6 @@ pub fn emergency_withdraw(
     admin: &Address,
     depositor: &Address,
     token: &Address,
-    deposit_id: u32,
     amount: i128,
 ) {
     env.events().publish(
