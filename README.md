@@ -1,11 +1,11 @@
-﻿# ðŸ”’ Decentralized Time-Lock Vault
+# 🔒 Decentralized Time-Lock Vault
 
 [![Rust](https://img.shields.io/badge/Rust-1.81%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![Soroban SDK](https://img.shields.io/badge/Soroban-SDK%20v22-blue?logo=stellar)](https://github.com/stellar/rs-soroban-sdk)
 [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
 [![Tests](https://github.com/kenedybok3/Decentralized-Time-Lock-Vault/actions/workflows/ci.yml/badge.svg)](https://github.com/kenedybok3/Decentralized-Time-Lock-Vault/actions)
 
-A production-ready Soroban smart contract on the Stellar blockchain that locks XLM or any Stellar asset until a future timestamp is reached.
+A production-ready Soroban smart contract on the Stellar blockchain that locks XLM or any Stellar asset until a future timestamp or ledger sequence number is reached.
 
 **Table of Contents**
 - [Overview](#overview)
@@ -26,7 +26,7 @@ A production-ready Soroban smart contract on the Stellar blockchain that locks X
 | Network | Stellar (Soroban) |
 | Language | Rust |
 | SDK | soroban-sdk v22 |
-| Storage | Persistent (per-depositor) |
+| Storage | Persistent (per-depositor, per-deposit-id) |
 | Max deposit | 10^15 units (1 quadrillion) |
 | Max lock duration | 5 years |
 
@@ -74,6 +74,19 @@ Depositor
            |- token.transfer(contract -> depositor)
            `- emit "withdraw" event
 ```
+
+### Timestamp vs Ledger Deposits
+
+The contract supports two deposit modes:
+
+| Mode | Function | Unlock condition | Entry type |
+|---|---|---|---|
+| Timestamp | `deposit`, `deposit_for` | `env.ledger().timestamp() >= unlock_time` | `VaultEntry` (unlock_time: u64 Unix seconds) |
+| Ledger sequence | `deposit_by_ledger` | `env.ledger().sequence() >= unlock_ledger` | `LedgerVaultEntry` (unlock_ledger: u32) |
+
+Use timestamp mode for human-readable calendar deadlines. Use ledger-sequence mode when you need deterministic block-count-based locks without clock-skew exposure. Note that `deposit_by_ledger` does **not** check the contract pause state.
+
+`withdraw` transparently handles both modes: it first looks for a timestamp entry, then a ledger entry for the same `(depositor, deposit_id)` key.
 
 ### Storage Layout
 
@@ -393,6 +406,7 @@ All events are emitted via `env.events().publish(topics, data)`.
 | Event | Topics | Data |
 |---|---|---|
 | `deposit` | `("deposit", depositor, token)` | `(deposit_id, amount, unlock_time)` |
+| `top_up` | `("top_up", depositor, token)` | `(deposit_id, added, new_total)` |
 | `withdraw` | `("withdraw", depositor, token)` | `(deposit_id, amount)` |
 | `withdraw_to` | `("withdraw_to", depositor, recipient, token)` | `(deposit_id, amount)` |
 | `emrg_wdraw` | `("emrg_wdraw", depositor)` | `(deposit_id, admin, token, amount)` |
@@ -415,13 +429,14 @@ All `amount` and `penalty` values are `i128` token units. `deposit_id` is a `u32
 
 ## 🗄️ Storage Layout
 
-All entries use **Persistent Storage** with TTL bump threshold â‰ˆ 30 days (`BUMP_THRESHOLD = 518_400` ledgers) and target â‰ˆ 5.2 years (`BUMP_TARGET = 33_000_000` ledgers), ensuring a max-duration deposit cannot expire before its unlock time.
+All entries use **Persistent Storage** with TTL bump threshold ≈ 30 days (`BUMP_THRESHOLD = 518_400` ledgers) and target ≈ 5.2 years (`BUMP_TARGET` derived from `MAX_LOCK_DURATION_SECS / 5s`).
 
 | Key | Type | Lifetime |
 |---|---|---|
 | `VaultKey::Admin` | `Address` | Set on `initialize`; removed on `renounce_admin` |
 | `VaultKey::PendingAdmin` | `Address` | Set by `transfer_admin`; cleared by `accept_admin` / `cancel_transfer_admin` |
 | `VaultKey::Initialized` | `bool` | Set once on `initialize`; never removed |
+| `VaultKey::Paused` | `bool` | Set by `pause`/`unpause`; absent means not paused |
 | `VaultKey::FeeRecipient` | `Address` | Set on `initialize`; never removed |
 | `VaultKey::MaxDeposit` | `i128` | Set on `initialize` if overridden; absent means use compile-time default |
 | `VaultKey::MaxLockSecs` | `u64` | Set on `initialize` if overridden; absent means use compile-time default |
@@ -433,10 +448,11 @@ All entries use **Persistent Storage** with TTL bump threshold â‰ˆ 30 days (
 | `VaultKey::DepositorIndex(depositor)` | `u32` | Slot index for an active depositor |
 
 `VaultEntry` fields: `token: Address`, `amount: i128`, `unlock_time: u64`, `depositor: Address`, `penalty_bps: u32`.
+`LedgerVaultEntry` fields: `token: Address`, `amount: i128`, `unlock_ledger: u32`, `depositor: Address`, `penalty_bps: u32`.
 
 `LedgerVaultEntry` fields: `token: Address`, `amount: i128`, `unlock_ledger: u32`, `depositor: Address`, `penalty_bps: u32`.
 
-TTL is bumped on every **write**. Read-only query functions (`get_vault`, `time_remaining`, `get_time`) skip the TTL bump to avoid charging callers extra fees.
+TTL is bumped on every **write**. Read-only query functions skip the TTL bump to avoid charging callers extra fees.
 
 ---
 
@@ -444,9 +460,9 @@ TTL is bumped on every **write**. Read-only query functions (`get_vault`, `time_
 
 | Code | Name | Meaning |
 |---|---|---|
-| 1 | `InvalidAmount` | Amount â‰¤ 0 |
-| 2 | `UnlockTimeNotInFuture` | `unlock_time` â‰¤ current ledger time |
-| 3 | `NoDepositFound` | No active deposit for this address |
+| 1 | `InvalidAmount` | Amount ≤ 0 |
+| 2 | `UnlockTimeNotInFuture` | `unlock_time` ≤ current ledger time (or `unlock_ledger` ≤ current sequence) |
+| 3 | `NoDepositFound` | No active deposit for this depositor/id |
 | 4 | `FundsStillLocked` | Lock period not yet expired |
 | 5 | `DepositAlreadyExists` | Reserved error code |
 | 6 | `LockDurationTooLong` | Lock period exceeds 5 years |
@@ -467,10 +483,10 @@ TTL is bumped on every **write**. Read-only query functions (`get_vault`, `time_
 
 | Property | Implementation |
 |---|---|
-| Checks-Effects-Interactions | Storage cleared before token transfer on every withdrawal |
+| Checks-Effects-Interactions | Storage cleared before token transfer on every withdrawal path |
 | Auth-first ordering | `require_auth()` is always the first statement in every mutating function |
 | No re-entrancy surface | State removed before any external token call |
-| Bounded inputs | Amount capped at 10^15; lock duration capped at 5 years |
+| Bounded inputs | Amount capped at 10^15; lock duration capped at 5 years with a 60 s minimum |
 | No admin fund theft | Emergency withdraw always sends to depositor, never to admin |
 | Trustless mode | Admin can permanently renounce via `renounce_admin()` |
 | Safe admin transfer | Two-step transfer prevents accidental key loss |
@@ -478,22 +494,21 @@ TTL is bumped on every **write**. Read-only query functions (`get_vault`, `time_
 | Pause mechanism | Admin can pause new deposits via `pause()` without affecting existing locked funds; `unpause()` resumes normal operation |
 | TTL management | Persistent entries bumped to ~5.2 years on every write; view functions skip TTL bump |
 | No testutils in production | `features = ["testutils"]` only in `[dev-dependencies]` |
-| Initialize front-running | `initialize()` has no on-chain guard against a race: an attacker who observes the deploy transaction in the mempool can call `initialize` first with their own address. **Mitigation:** always call `initialize` in the same transaction as `deploy` (atomic deploy+init) so no intermediate state is visible. The deploy script does this by default. |
+| Initialize front-running | `initialize()` has no on-chain guard against a race: an attacker who observes the deploy transaction in the mempool can call `initialize` first with their own address. **Mitigation:** always call `initialize` in the same transaction as `deploy` (atomic deploy+init). The deploy script does this by default. |
 
 ---
 
 ## 🔄 Upgradeability
 
-Soroban contracts are **immutable by default** â€” once deployed, the contract code cannot be changed or patched.
+Soroban contracts are **immutable by default** — once deployed, the contract code cannot be changed or patched.
 
 | Implication | Detail |
 |---|---|
 | No in-place upgrades | There is no `upgrade` or `set_code` function; the deployed WASM is fixed forever |
 | Bug fixes require redeployment | A new contract must be deployed and users must migrate their funds to it |
-| Migration path | The admin can call `emergency_withdraw(admin, depositor)` for each active deposit to return funds to depositors, who can then re-deposit into the new contract |
-| Trustless trade-off | If `renounce_admin()` has been called, no migration is possible â€” the contract is fully trustless but also fully immutable with no escape hatch |
-
-Plan deployments carefully. Audit the contract before going to mainnet, because there is no way to patch a live deployment.
+| Migration path | The admin can call `emergency_withdraw(admin, depositor, deposit_id)` for each active deposit to return funds, who can then re-deposit into the new contract. Use `get_depositors` + `get_deposit_ids` to enumerate all live deposits. |
+| Pause during migration | Call `pause` before starting migration to prevent new deposits during the transition. |
+| Trustless trade-off | If `renounce_admin()` has been called, no migration is possible — the contract is fully trustless but also fully immutable with no escape hatch |
 
 ---
 
@@ -522,7 +537,7 @@ make build
 ```
 
 > **Why not just `cargo build`?**
-> Running `cargo build` without `--target wasm32-unknown-unknown` produces a native binary, not a WASM contract. The Makefile's `build` target always passes the correct flag. A `.cargo/config.toml` is included in the repo that documents this trade-off â€” the default target is intentionally left commented out because setting it would break `cargo test` (tests must run natively to use Soroban testutils).
+> Running `cargo build` without `--target wasm32-unknown-unknown` produces a native binary, not a WASM contract. The Makefile's `build` target always passes the correct flag.
 
 ### ✅ Test
 
@@ -530,9 +545,9 @@ make build
 make test
 ```
 
-> Tests run natively (no `--target` flag) so that `soroban-sdk`'s `testutils` feature works. Never run `cargo test --target wasm32-unknown-unknown`.
+> Tests run natively (no `--target` flag) so that `soroban-sdk`'s `testutils` feature works.
 
-### 🔍 Full CI check (fmt + lint + test + audit + deny)
+### 🔍 Full CI check (fmt + lint + test + build + audit + deny)
 
 ```bash
 make check
@@ -566,8 +581,6 @@ GitHub Release as `time_lock_vault.optimized.wasm`.
 make deny
 ```
 
-Runs `cargo deny check` to enforce license allowlists and ban policies defined in `deny.toml`.
-
 ### ⚡ Optimize WASM
 
 ```bash
@@ -581,14 +594,6 @@ make check-wasm-size
 ```
 
 Fails if the optimized WASM exceeds `MAX_WASM_BYTES` (default **65 536 bytes / 64 KB**).
-Override the threshold at the command line:
-
-```bash
-make check-wasm-size MAX_WASM_BYTES=81920   # 80 KB
-```
-
-The same threshold is enforced in CI via the `Check WASM size` step in `.github/workflows/ci.yml`.
-To update the limit, change `MAX_WASM_BYTES` in both places (or only in `ci.yml` if you don't use the Makefile target locally).
 
 ### 🌐 Deploy to Testnet
 
@@ -597,76 +602,24 @@ export SOROBAN_SECRET_KEY=S...
 make deploy-testnet
 ```
 
-### 🎯 Release Deployment (CI)
-
-Pushing a version tag triggers the `deploy-testnet` CI job automatically:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The job requires the `SOROBAN_SECRET_KEY` secret to be set in the repository's **testnet** environment (`Settings â†’ Environments â†’ testnet â†’ Secrets`). After the run, the deployed contract ID appears in the job's summary tab.
-
 ### 🧪 Smoke Test (local node)
 
-Runs a quick end-to-end test against a local Soroban standalone node â€” no funded account or testnet access required.
-
 ```bash
-# Build the WASM first, then run the smoke test
 make smoke-test-local
 ```
 
-The script (`scripts/smoke_test_local.sh`):
-1. Starts a local node via `stellar network start local`
-2. Generates a funded test identity
-3. Deploys the contract and calls `initialize`, `deposit`, `get_vault`, `time_remaining`, and `withdraw`
-4. Asserts expected outputs at each step
-5. Stops the local node on exit
-
 ---
-
-## 📝 Updating the Stellar CLI Version
-
-`STELLAR_CLI_VERSION` is defined as a top-level `env` variable in `.github/workflows/ci.yml`. Dependabot keeps GitHub Actions versions up to date automatically, but it does not track arbitrary binary downloads. When a new `stellar-cli` release is published at https://github.com/stellar/stellar-cli/releases, update the variable manually:
-
-```yaml
-# .github/workflows/ci.yml
-env:
-  STELLAR_CLI_VERSION: "<new-version>"
-```
 
 ## ✈️ Deployment Checklist
 
-Use this checklist when deploying to production.
-
 - [ ] Deploy and call `initialize` in the same transaction to prevent front-running
 - [ ] Verify `get_admin` returns the expected admin address
-- [ ] Run `get_constants` to confirm `MAX_DEPOSIT_AMOUNT` and `MAX_LOCK_DURATION_SECS` match your intended parameters
+- [ ] Verify `is_initialized` returns `true`
+- [ ] Run `get_constants` to confirm `MAX_DEPOSIT_AMOUNT` and `MAX_LOCK_DURATION_SECS` match intended parameters
 - [ ] Verify `get_fee_recipient` returns the correct fee recipient address
 - [ ] Consider calling `renounce_admin` for fully trustless operation once setup is complete
-- [ ] Monitor storage TTL for long-duration vaults â€” entries are bumped on write but not on read
+- [ ] Monitor storage TTL for long-duration vaults — entries are bumped on write but not on read
 - [ ] Confirm the optimized WASM size is within the Stellar network limit (`make check-wasm-size`)
-
----
-
-## 💡 Fee Estimation
-
-Soroban charges fees for persistent storage operations. Here is what each call costs at a high level:
-
-| Operation | Storage effect |
-|---|---|
-| `deposit` | Creates a new persistent entry + pays for initial TTL bump (~30-day threshold, ~5.2-year target) |
-| `withdraw` / `cancel_deposit` / `emergency_withdraw` | Removes the persistent entry (storage freed) |
-| `get_vault`, `time_remaining`, `get_time` | Read-only â€” **no TTL bump**, no extra storage fee |
-| `initialize` | Writes admin / fee-recipient entries once |
-
-Key points:
-- The depositor pays the storage-creation fee on `deposit`.
-- View functions intentionally skip TTL bumps to avoid charging callers for reads.
-- For very long locks (approaching 5 years) the TTL is set well beyond the unlock time, so no manual TTL extension is needed.
-
-For current fee rates see the [Stellar fee documentation](https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering).
 
 ---
 
@@ -674,11 +627,12 @@ For current fee rates see the [Stellar fee documentation](https://developers.ste
 
 | Limitation | Detail |
 |---|---|
-| One deposit per address | A depositor must `withdraw` or `cancel_deposit` before making a new deposit. |
-| No partial withdrawals | The full locked amount is returned in one call; partial releases are not supported. |
-| No early withdrawal without admin | Only `cancel_deposit` (with a penalty) or an admin `emergency_withdraw` can release funds before the unlock time. |
-| Single admin address | Admin is one key â€” no multisig or DAO governance. Use `renounce_admin` to go fully trustless. |
-| Storage TTL | Persistent entries are bumped to ~5.2 years on every write. Deposits longer than that would require a TTL extension call (current max lock is 5 years, so this is not an issue in practice). |
+| Multiple deposits per address supported | Each `deposit` call returns a new `deposit_id`. Use `get_deposit_ids` to list all active IDs. |
+| No partial withdrawals | The full locked amount is returned in one call. |
+| `cancel_deposit` / `withdraw_to` / `emergency_withdraw` are timestamp-only | These functions do not handle ledger-based deposits. Use `withdraw` for ledger deposits. |
+| `is_paused` check only on timestamp deposits | `deposit_by_ledger` does not check the pause flag. |
+| Single admin address | Admin is one key — no multisig or DAO governance. Use `renounce_admin` to go fully trustless. |
+| `MAX_BATCH_SIZE` = 20 | `get_vault_batch` accepts at most 20 depositors per call. |
 
 ---
 
@@ -696,42 +650,36 @@ make test
 cargo test test_deposit_success --features testutils -- --nocapture
 ```
 
-### Run all tests with output
-
-```bash
-cargo test --features testutils -- --nocapture
-```
-
-> Tests run natively (without `--target wasm32-unknown-unknown`) so that `soroban-sdk`'s `testutils` feature works correctly.
-
 ### Test categories
 
 The suite (`contracts/time-lock-vault/src/test.rs`) contains 48+ tests covering:
 
 | Category | What is tested |
 |---|---|
-| Deposit | Valid deposits, duplicate deposits, amount/time boundary checks |
-| Withdraw | Successful withdrawal, early withdrawal rejection, missing deposit |
+| Deposit | Valid deposits, `deposit_for`, `deposit_by_ledger`, amount/time boundary checks |
+| Withdraw | Successful withdrawal, early withdrawal rejection, `withdraw_to`, ledger-based withdraw |
 | Cancel deposit | Penalty calculation, fee recipient transfer, post-unlock rejection |
 | Admin | `transfer_admin`, `accept_admin`, `cancel_transfer_admin`, `renounce_admin` |
+| Pause / Unpause | Deposit blocked while paused, withdrawal unaffected, `is_paused` query |
 | Emergency withdraw | Admin-only access, funds always go to depositor |
-| Read-only queries | `get_vault`, `time_remaining`, `get_time`, `get_constants`, pagination |
+| Read-only queries | `get_vault`, `get_vault_batch`, `get_deposit_ids`, `time_remaining`, `is_initialized`, pagination |
 | Error codes | Every `VaultError` variant is exercised |
 
 ---
 
 ## Use Cases
 
-- **Savings accounts** â€” Lock funds for a fixed period to enforce saving discipline.
-- **Token vesting** â€” Team or investor tokens released on a schedule.
-- **HODL challenges** â€” Commit to not selling until a future date.
-- **Escrow** â€” Time-gated release of payment.
+- **Savings accounts** — Lock funds for a fixed period to enforce saving discipline.
+- **Token vesting** — Team or investor tokens released on a schedule.
+- **HODL challenges** — Commit to not selling until a future date or block height.
+- **Escrow** — Time-gated release of payment.
+- **Third-party funding** — Use `deposit_for` to fund a vault on behalf of another address.
 
 ---
 
 ## Contributing
 
-
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full version history.
 

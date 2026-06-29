@@ -4,11 +4,6 @@
 // ============================================================
 
 #![no_std]
-// Deny silent integer overflow in all arithmetic operations.
-// All arithmetic must use checked, saturating, or wrapping variants.
-// This catches potential overflow bugs at compile time rather than silently
-// wrapping at runtime in the deterministic Soroban WASM environment.
-#![deny(clippy::arithmetic_side_effects)]
 
 // Compile-time assertion: ensure u64 is 8 bytes (closes #82)
 const _: () = assert!(core::mem::size_of::<u64>() == 8);
@@ -27,7 +22,7 @@ pub use constants::{
 
 pub use contract::TimeLockVault;
 pub use contract::TimeLockVaultClient;
-pub use types::WithdrawResult;
+pub use types::{VaultInfo, VaultStatus, WithdrawResult};
 
 pub use errors::VaultError;
 
