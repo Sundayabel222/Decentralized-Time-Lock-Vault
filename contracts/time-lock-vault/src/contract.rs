@@ -992,6 +992,15 @@ impl TimeLockVault {
         }
     }
 
+    /// No auth required — this is a public read-only query for ledger-based deposits.
+    pub fn get_vault_by_ledger(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<LedgerVaultEntry> {
+        storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
+    }
+
     pub fn get_vault_batch(env: Env, depositors: Vec<Address>, deposit_id: u32) -> Vec<Option<VaultEntry>> {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() };
         let mut results = Vec::new(&env);
