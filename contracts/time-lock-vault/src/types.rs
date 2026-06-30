@@ -6,10 +6,8 @@ pub enum VaultKey {
     Deposit(Address, u32),
     DepositByLedger(Address, u32),
     DepositCounter(Address),
-    ActiveDepositIds(Address),
     ActiveDepositCount(Address),
     Admin,
-    /// Pending admin during a two-step transfer
     PendingAdmin,
     Initialized,
     DepositorMember(Address),
@@ -19,20 +17,6 @@ pub enum VaultKey {
     FeeRecipient,
     MaxDeposit,
     MaxLockSecs,
-    /// Flag indicating whether deposits are paused
-    Paused,
-    DepositorCount,
-    DepositorIndex(Address),
-    DepositorAt(u32),
-}
-
-// ----------------------------------------------------------------
-//  Data Structures
-// ----------------------------------------------------------------
-
-/// Represents a single vault deposit.
-/// The depositor address is not stored here — it is already the storage key
-/// (VaultKey::Deposit(Address, u32)), so duplicating it wastes persistent storage.
     Paused,
     DepositorFrozen(Address),
     TokenFrozen(Address),
